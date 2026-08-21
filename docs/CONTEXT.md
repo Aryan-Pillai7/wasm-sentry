@@ -241,6 +241,8 @@ Blocked on data, not code.
 
 ## Where the reasoning lives
 
+- [`design-decisions.md`](design-decisions.md) — every significant choice with
+  its rationale and the alternatives rejected.
 - [`detection.md`](detection.md) — rules, scoring maths, the calibration corpus,
   and the false positive that reshaped the design.
 - [`architecture.md`](architecture.md) — the seven stages and which are done.
