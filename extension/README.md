@@ -1,73 +1,35 @@
-# React + TypeScript + Vite
+# Wasm-Sentry extension
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Chrome MV3 extension. See the [root README](../README.md) for setup and the
+[architecture doc](../docs/architecture.md) for how the pieces fit.
 
-Currently, two official plugins are available:
+## Build
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm run build -w extension    # from the repository root
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+Output lands in `dist/`. Load it with **Load unpacked** at `chrome://extensions`
+with Developer mode on. Chrome 111+ is required for `"world": "MAIN"` content
+scripts.
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+Two build tools, split by responsibility: Vite owns HTML entry points, esbuild
+owns the three script entries — Rollup will not emit several IIFE bundles from
+one multi-entry build, and MV3 content scripts cannot be ES modules. See
+`scripts/build-scripts.mjs`.
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+## Entry points
+
+| File | World | Role |
+|---|---|---|
+| `src/content/injector.ts` | page MAIN | Installs the WebAssembly hooks at `document_start`. |
+| `src/content/capture-hooks.ts` | — | The interception logic, with globals injected so it is unit-testable. |
+| `src/content/bridge.ts` | ISOLATED | Relays captures to the service worker, base64 encoding on the way. |
+| `src/background/service-worker.ts` | extension | Trust boundary, analysis, storage, scorecard. |
+| `src/popup/popup.tsx` | extension | Privacy Scorecard UI. |
+
+## Test
+
+```bash
+npm test -w extension
 ```
