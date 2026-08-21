@@ -2,12 +2,16 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import "fake-indexeddb/auto";
 import {
+  addEvent,
   addNote,
   addSighting,
   clearTab,
   getAnalyses,
   getArtifacts,
   getNotesByTab,
+  getAllArtifacts,
+  getArtifactBytes,
+  getRecentEvents,
   getSightingsByTab,
   prune,
   saveAnalysis,
@@ -23,14 +27,14 @@ const BYTES = Uint8Array.of(0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00);
  */
 test("stores an artifact and reports whether it was new", async () => {
   const first = await upsertArtifact(
-    { hash: "aaa", kind: "wasm", size: BYTES.length, bytes: BYTES },
+    { hash: "aaa", kind: "wasm", size: BYTES.length, bytes: BYTES, pageUrl: "https://x.test/" },
     1000,
   );
   assert.equal(first.isNew, true);
   assert.equal(first.row.seenCount, 1);
 
   const second = await upsertArtifact(
-    { hash: "aaa", kind: "wasm", size: BYTES.length, bytes: BYTES },
+    { hash: "aaa", kind: "wasm", size: BYTES.length, bytes: BYTES, pageUrl: "https://y.test/" },
     2000,
   );
   assert.equal(second.isNew, false);
@@ -86,4 +90,31 @@ test("clearTab removes a tab's sightings and notes", async () => {
 
 test("prune resolves when nothing needs evicting", async () => {
   assert.equal(await prune(), 0);
+});
+
+test("artifact bytes are stored apart from metadata", async () => {
+  // Listing every module ever seen must not deserialise megabytes of Wasm, so
+  // the metadata row deliberately carries no bytes.
+  const [row] = await getAllArtifacts(10);
+  assert.ok(row);
+  assert.equal("bytes" in row, false);
+  assert.deepEqual(await getArtifactBytes("aaa"), BYTES);
+  assert.equal(await getArtifactBytes("nope"), undefined);
+});
+
+test("the activity log keeps newest first", async () => {
+  await addEvent({ timestamp: 1, kind: "captured", pageUrl: "https://a.test/", tabId: 1 });
+  await addEvent({ timestamp: 2, kind: "analysed", pageUrl: "https://a.test/", tabId: 1 });
+  const events = await getRecentEvents(10);
+  assert.equal(events[0]?.kind, "analysed");
+  assert.equal(events[1]?.kind, "captured");
+});
+
+test("the activity log is capped rather than growing without bound", async () => {
+  for (let i = 0; i < 40; i++) {
+    await addEvent({ timestamp: i, kind: "captured", pageUrl: "https://b.test/", tabId: 2 });
+  }
+  const events = await getRecentEvents(1000);
+  assert.ok(events.length <= 500, `log grew to ${events.length}`);
+  assert.equal(events[0]?.timestamp, 39, "newest survives trimming");
 });

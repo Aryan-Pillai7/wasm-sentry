@@ -108,10 +108,14 @@ the same aggregation in Phase 4.
 
 ## Storage
 
-**Extension (IndexedDB).** `artifacts` keyed by content hash and holding the
-bytes; `sightings` recording every time a hash was seen and where; `notes` for
-artifacts observed but not analysed, with the reason; `results` for verdicts.
-Retention is bounded by a least-recently-seen eviction pass.
+**Extension (IndexedDB).** `artifacts` keyed by content hash holds metadata
+only, with the bytes in a separate `blobs` store so that listing every module
+ever seen never deserialises megabytes of WebAssembly; `sightings` records every
+time a hash was seen and where; `notes` covers artifacts observed but not
+analysed, with the reason; `results` holds verdicts; `events` is a capped
+append-only activity log across all tabs, which is what lets the dashboard show
+the extension working rather than leaving the user to infer it. Retention is
+bounded by a least-recently-seen eviction pass.
 
 **Backend (SQLite, Phase 2).** Sessions, jobs and results, per
 `backend/src/db/schema.sql`.

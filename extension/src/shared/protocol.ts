@@ -3,6 +3,7 @@ import type {
   ArtifactKind,
   CaptureSource,
   PageScorecard,
+  RiskLevel,
   WasmApi,
 } from "@wasm-sentry/core";
 
@@ -70,11 +71,30 @@ export interface PingRequest {
   type: "wasm-sentry:ping";
 }
 
+/** Dashboard asking for the cross-tab activity view. */
+export interface ActivityRequest {
+  type: "wasm-sentry:activity";
+}
+
+/** Dashboard changing a setting. */
+export interface UpdateSettingsRequest {
+  type: "wasm-sentry:update-settings";
+  patch: Record<string, unknown>;
+}
+
+/** Dashboard wiping stored state. */
+export interface ClearAllRequest {
+  type: "wasm-sentry:clear-all";
+}
+
 export type ExtensionMessage =
   | CaptureRequest
   | SkipRequest
   | TabReportRequest
-  | PingRequest;
+  | PingRequest
+  | ActivityRequest
+  | UpdateSettingsRequest
+  | ClearAllRequest;
 
 export function isInjectorMessage(value: unknown): value is InjectorCaptureMessage {
   return (
@@ -110,4 +130,50 @@ export interface TabReport {
   scorecard: PageScorecard;
   artifacts: TabArtifactView[];
   notes: Array<{ url: string; reason: string; size: number; api?: WasmApi; timestamp: number }>;
+}
+
+/** One line of the activity feed, as the dashboard receives it. */
+export interface ActivityEvent {
+  timestamp: number;
+  kind: "captured" | "analysed" | "skipped" | "alerted" | "cleared";
+  pageUrl: string;
+  hash?: string;
+  size?: number;
+  api?: WasmApi;
+  level?: RiskLevel;
+  score?: number;
+  detail?: string;
+}
+
+/** A module in the all-sites listing. */
+export interface ModuleRow {
+  hash: string;
+  size: number;
+  seenCount: number;
+  firstSeen: number;
+  lastSeen: number;
+  lastPageUrl: string;
+  analysis?: ArtifactAnalysis;
+}
+
+/** Live self-check, so the extension can show that it is working. */
+export interface RuntimeStatus {
+  /** Epoch ms the service worker answering this request started. */
+  workerStartedAt: number;
+  /** Whether the observational network listener registered successfully. */
+  networkObserver: boolean;
+  /** Chrome's notification permission level, or "unavailable". */
+  notificationLevel: string;
+  /** Total artifacts retained locally. */
+  artifactCount: number;
+  /** Epoch ms of the most recent capture, if any. */
+  lastCaptureAt: number | null;
+}
+
+/** Everything the dashboard renders. */
+export interface ActivityReport {
+  status: RuntimeStatus;
+  settings: Record<string, unknown>;
+  events: ActivityEvent[];
+  modules: ModuleRow[];
 }

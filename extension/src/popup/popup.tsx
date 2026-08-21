@@ -227,7 +227,9 @@ function Popup(): React.JSX.Element {
   return (
     <div className="panel">
       <header>
-        <h1>Wasm-Sentry</h1>
+        <h1>
+          <span className="pulse" /> Wasm-Sentry
+        </h1>
         <span className="count">{report.artifacts.length} modules</span>
       </header>
 
@@ -247,6 +249,13 @@ function Popup(): React.JSX.Element {
           ))}
         </ul>
       )}
+
+      <p className="footer">
+        <button onClick={() => void chrome.runtime.openOptionsPage()}>
+          Open dashboard
+        </button>
+        <span className="caveat">Runs on every page automatically.</span>
+      </p>
 
       {notes.length > 0 && (
         <section className="notes">

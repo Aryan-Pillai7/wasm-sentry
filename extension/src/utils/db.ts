@@ -3,24 +3,37 @@
  *
  * Schema notes:
  *
- *  - `artifacts` is keyed by content hash, not URL. One CDN module served under
- *    a thousand cache-busted URLs is one row, analysed once.
- *  - The bytes are kept alongside the metadata so a later pipeline stage (or a
- *    re-run after a rule change) does not have to re-observe the module. This
- *    is bounded by `prune()`.
+ *  - `artifacts` holds metadata only and is keyed by content hash, not URL. One
+ *    CDN module served under a thousand cache-busted URLs is one row, analysed
+ *    once. The bytes live separately in `blobs` so that listing every module
+ *    ever seen never has to deserialise megabytes of WebAssembly.
+ *  - Bytes are retained so a later pipeline stage, or a re-run after a rule
+ *    change, does not have to re-observe the module. Bounded by `prune()`.
  *  - `sightings` is the many-to-one side: every time a hash is seen, where and
- *    through which API. That is what makes per-tab and per-site reporting
- *    possible without duplicating payloads.
+ *    through which API. That is what makes per-tab reporting possible without
+ *    duplicating payloads.
+ *  - `events` is an append-only activity log across all tabs, capped. It exists
+ *    so the dashboard can show that the extension is working continuously
+ *    rather than leaving the user to infer it.
  */
-import type { ArtifactAnalysis, ArtifactKind, CaptureSource, WasmApi } from "@wasm-sentry/core";
+import type {
+  ArtifactAnalysis,
+  ArtifactKind,
+  CaptureSource,
+  RiskLevel,
+  WasmApi,
+} from "@wasm-sentry/core";
 
 const DB_NAME = "wasm-sentry";
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 /** Upper bounds on locally retained artifact bytes. */
 const MAX_STORED_ARTIFACTS = 300;
 const MAX_STORED_BYTES = 128 * 1024 * 1024;
+/** Activity log depth. Enough to show a session's work, not a history. */
+const MAX_EVENTS = 500;
 
+/** Metadata about an artifact. Never carries the bytes -- see `blobs`. */
 export interface ArtifactRow {
   hash: string;
   kind: ArtifactKind;
@@ -28,7 +41,8 @@ export interface ArtifactRow {
   firstSeen: number;
   lastSeen: number;
   seenCount: number;
-  bytes: Uint8Array;
+  /** Most recent page this hash was seen on, for the all-tabs listing. */
+  lastPageUrl: string;
 }
 
 export interface SightingRow {
@@ -43,6 +57,13 @@ export interface SightingRow {
   timestamp: number;
 }
 
+/**
+ * Why an observed artifact has no bytes on record. Kept as data rather than
+ * dropped silently so the Scorecard can say "3 modules seen, 1 not analysed
+ * because it exceeded the size cap" instead of quietly under-reporting.
+ */
+export type NoteReason = "too-large" | "rate-limited" | "read-failed" | "network-only";
+
 export interface NoteRow {
   id?: number;
   url: string;
@@ -54,12 +75,22 @@ export interface NoteRow {
   timestamp: number;
 }
 
-/**
- * Why an observed artifact has no bytes on record. Kept as data rather than
- * dropped silently so the Scorecard can say "3 modules seen, 1 not analysed
- * because it exceeded the size cap" instead of quietly under-reporting.
- */
-export type NoteReason = "too-large" | "rate-limited" | "read-failed" | "network-only";
+export type EventKind = "captured" | "analysed" | "skipped" | "alerted" | "cleared";
+
+/** One line in the activity feed. */
+export interface EventRow {
+  id?: number;
+  timestamp: number;
+  kind: EventKind;
+  pageUrl: string;
+  tabId: number;
+  hash?: string;
+  size?: number;
+  api?: WasmApi;
+  level?: RiskLevel;
+  score?: number;
+  detail?: string;
+}
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
@@ -70,11 +101,13 @@ export function openDB(): Promise<IDBDatabase> {
 
     request.onupgradeneeded = () => {
       const db = request.result;
-      // v1 keyed captures by an auto-increment id and stored no bytes. There is
-      // nothing worth migrating, so the old stores are dropped outright.
+      // Earlier versions stored bytes inline with metadata and had no activity
+      // log. Nothing there is worth migrating -- it is a cache of things the
+      // browser can observe again -- so the old stores are dropped outright.
       for (const name of Array.from(db.objectStoreNames)) db.deleteObjectStore(name);
 
       db.createObjectStore("artifacts", { keyPath: "hash" }).createIndex("by_lastSeen", "lastSeen");
+      db.createObjectStore("blobs", { keyPath: "hash" });
 
       const sightings = db.createObjectStore("sightings", { keyPath: "id", autoIncrement: true });
       sightings.createIndex("by_hash", "hash");
@@ -82,6 +115,8 @@ export function openDB(): Promise<IDBDatabase> {
 
       const notes = db.createObjectStore("notes", { keyPath: "id", autoIncrement: true });
       notes.createIndex("by_tab", "tabId");
+
+      db.createObjectStore("events", { keyPath: "id", autoIncrement: true });
 
       // Verdicts are keyed by artifact hash too, so a module already analysed
       // on another site is never analysed twice.
@@ -102,14 +137,15 @@ function promisify<T>(request: IDBRequest<T>): Promise<T> {
   });
 }
 
-async function withStore<T>(
-  name: string,
+async function withStores<T>(
+  names: readonly string[],
   mode: IDBTransactionMode,
-  run: (store: IDBObjectStore) => Promise<T> | T,
+  run: (stores: Record<string, IDBObjectStore>) => Promise<T> | T,
 ): Promise<T> {
   const db = await openDB();
-  const tx = db.transaction(name, mode);
-  const result = await run(tx.objectStore(name));
+  const tx = db.transaction(names as string[], mode);
+  const stores = Object.fromEntries(names.map((name) => [name, tx.objectStore(name)]));
+  const result = await run(stores);
   await new Promise<void>((resolve, reject) => {
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
@@ -118,22 +154,49 @@ async function withStore<T>(
   return result;
 }
 
+function withStore<T>(
+  name: string,
+  mode: IDBTransactionMode,
+  run: (store: IDBObjectStore) => Promise<T> | T,
+): Promise<T> {
+  return withStores([name], mode, (stores) => run(stores[name]!));
+}
+
 /**
  * Record an artifact, merging with any existing row for the same hash.
  * Returns whether this was the first time we ever saw these bytes, which is
  * what the caller uses to decide if analysis needs to run at all.
  */
 export async function upsertArtifact(
-  input: Omit<ArtifactRow, "firstSeen" | "lastSeen" | "seenCount">,
+  input: { hash: string; kind: ArtifactKind; size: number; bytes: Uint8Array; pageUrl: string },
   now: number,
 ): Promise<{ row: ArtifactRow; isNew: boolean }> {
-  return withStore("artifacts", "readwrite", async (store) => {
-    const existing = await promisify<ArtifactRow | undefined>(store.get(input.hash));
+  return withStores(["artifacts", "blobs"], "readwrite", async (stores) => {
+    const artifacts = stores["artifacts"]!;
+    const existing = await promisify<ArtifactRow | undefined>(artifacts.get(input.hash));
     const row: ArtifactRow = existing
-      ? { ...existing, lastSeen: now, seenCount: existing.seenCount + 1 }
-      : { ...input, firstSeen: now, lastSeen: now, seenCount: 1 };
-    await promisify(store.put(row));
+      ? { ...existing, lastSeen: now, seenCount: existing.seenCount + 1, lastPageUrl: input.pageUrl }
+      : {
+          hash: input.hash,
+          kind: input.kind,
+          size: input.size,
+          firstSeen: now,
+          lastSeen: now,
+          seenCount: 1,
+          lastPageUrl: input.pageUrl,
+        };
+    await promisify(artifacts.put(row));
+    if (!existing) {
+      await promisify(stores["blobs"]!.put({ hash: input.hash, bytes: input.bytes }));
+    }
     return { row, isNew: !existing };
+  });
+}
+
+export async function getArtifactBytes(hash: string): Promise<Uint8Array | undefined> {
+  return withStore("blobs", "readonly", async (store) => {
+    const row = await promisify<{ hash: string; bytes: Uint8Array } | undefined>(store.get(hash));
+    return row?.bytes;
   });
 }
 
@@ -145,10 +208,24 @@ export async function addNote(row: NoteRow): Promise<void> {
   await withStore("notes", "readwrite", (store) => promisify(store.add(row)));
 }
 
-export async function getArtifact(hash: string): Promise<ArtifactRow | undefined> {
-  return withStore("artifacts", "readonly", (store) =>
-    promisify<ArtifactRow | undefined>(store.get(hash)),
-  );
+/** Append to the activity log, trimming it back to its cap as it grows. */
+export async function addEvent(row: EventRow): Promise<void> {
+  await withStore("events", "readwrite", async (store) => {
+    await promisify(store.add(row));
+    const count = await promisify(store.count());
+    if (count <= MAX_EVENTS) return;
+    // Keys are auto-increment, so the oldest are simply the lowest.
+    const oldest = await promisify<IDBValidKey[]>(store.getAllKeys(null, count - MAX_EVENTS));
+    await Promise.all(oldest.map((key) => promisify(store.delete(key))));
+  });
+}
+
+/** Most recent activity first. */
+export async function getRecentEvents(limit: number): Promise<EventRow[]> {
+  return withStore("events", "readonly", async (store) => {
+    const rows = await promisify<EventRow[]>(store.getAll());
+    return rows.reverse().slice(0, limit);
+  });
 }
 
 export async function getSightingsByTab(tabId: number): Promise<SightingRow[]> {
@@ -172,11 +249,25 @@ export async function getArtifacts(hashes: readonly string[]): Promise<ArtifactR
   });
 }
 
+/** Every artifact ever seen, most recent first. Metadata only. */
+export async function getAllArtifacts(limit: number): Promise<ArtifactRow[]> {
+  return withStore("artifacts", "readonly", async (store) => {
+    const rows = await promisify<ArtifactRow[]>(store.index("by_lastSeen").getAll());
+    return rows.reverse().slice(0, limit);
+  });
+}
+
+export async function countArtifacts(): Promise<number> {
+  return withStore("artifacts", "readonly", (store) => promisify(store.count()));
+}
+
 export async function saveAnalysis(analysis: ArtifactAnalysis): Promise<void> {
   await withStore("results", "readwrite", (store) => promisify(store.put(analysis)));
 }
 
-export async function getAnalyses(hashes: readonly string[]): Promise<Map<string, ArtifactAnalysis>> {
+export async function getAnalyses(
+  hashes: readonly string[],
+): Promise<Map<string, ArtifactAnalysis>> {
   return withStore("results", "readonly", async (store) => {
     const rows = await Promise.all(
       hashes.map((hash) => promisify<ArtifactAnalysis | undefined>(store.get(hash))),
@@ -194,7 +285,7 @@ export async function hasAnalysis(hash: string): Promise<boolean> {
   });
 }
 
-/** Drop sightings and skips belonging to a tab that has gone away. */
+/** Drop sightings and notes belonging to a tab that has gone away. */
 export async function clearTab(tabId: number): Promise<void> {
   for (const name of ["sightings", "notes"] as const) {
     await withStore(name, "readwrite", async (store) => {
@@ -204,20 +295,30 @@ export async function clearTab(tabId: number): Promise<void> {
   }
 }
 
+/** Wipe everything. Exposed in the dashboard so the user can reset state. */
+export async function clearAll(): Promise<void> {
+  const names = ["artifacts", "blobs", "sightings", "notes", "events", "results"] as const;
+  await withStores(names, "readwrite", async (stores) => {
+    await Promise.all(names.map((name) => promisify(stores[name]!.clear())));
+  });
+}
+
 /**
  * Evict the least recently seen artifacts until the local cache is back inside
  * its bounds. Metadata is cheap; the retained bytes are not, so this is what
  * keeps a long browsing session from filling the user's disk.
  */
 export async function prune(): Promise<number> {
-  return withStore("artifacts", "readwrite", async (store) => {
-    const rows = await promisify<ArtifactRow[]>(store.index("by_lastSeen").getAll());
+  return withStores(["artifacts", "blobs"], "readwrite", async (stores) => {
+    const artifacts = stores["artifacts"]!;
+    const rows = await promisify<ArtifactRow[]>(artifacts.index("by_lastSeen").getAll());
     let totalBytes = rows.reduce((sum, row) => sum + row.size, 0);
     let evicted = 0;
     // `getAll` on the index yields oldest-first, which is exactly eviction order.
     for (const row of rows) {
       if (rows.length - evicted <= MAX_STORED_ARTIFACTS && totalBytes <= MAX_STORED_BYTES) break;
-      await promisify(store.delete(row.hash));
+      await promisify(artifacts.delete(row.hash));
+      await promisify(stores["blobs"]!.delete(row.hash));
       totalBytes -= row.size;
       evicted++;
     }

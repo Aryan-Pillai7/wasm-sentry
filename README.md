@@ -83,17 +83,25 @@ You can point the parser at any module from the command line:
 npm run inspect -w @wasm-sentry/core -- path/to/module.wasm
 ```
 
-## What you see without opening anything
+## Seeing it work
 
-Analysis runs on every page load with no interaction. The toolbar badge carries
-the result: the number of modules on the page, coloured by the worst verdict —
-blue for benign or low, amber for medium, red for high, dark red for critical.
-Pin the extension to the toolbar or the badge is hidden in the puzzle-piece menu.
+Analysis runs on every page load with no interaction. Three places show it:
 
-A desktop notification fires only for the high and critical bands, names the
+**The dashboard** (right-click the extension → Options, or the button in the
+popup) is the full view: a live status panel, an activity feed of every capture
+and verdict across all tabs, every module ever seen with its findings and
+disassembly, and the settings toggles. It refreshes on its own.
+
+**The toolbar badge** is the ambient signal: modules on the current page,
+coloured by the worst verdict — blue for benign or low, amber for medium, red
+for high, dark red for critical. Pin the extension or the badge is hidden in the
+puzzle-piece menu.
+
+**A desktop notification** fires only for the high and critical bands, names the
 finding rather than just the score, and is de-duplicated per site and module so
 a reload never notifies twice. Turn it off with the `notifyOnHighRisk` setting.
-Opening the popup is only needed for the detail.
+
+The popup is only needed for per-page detail.
 
 ## Privacy
 

@@ -22,31 +22,45 @@ import {
 } from "@wasm-sentry/core";
 import type { RiskAssessment, RiskLevel } from "@wasm-sentry/core";
 import {
+  addEvent,
   addNote,
   addSighting,
+  clearAll,
   clearTab,
+  countArtifacts,
+  getAllArtifacts,
   getAnalyses,
   getArtifacts,
-  hasAnalysis,
-  saveAnalysis,
   getNotesByTab,
+  getRecentEvents,
   getSightingsByTab,
+  hasAnalysis,
   prune,
+  saveAnalysis,
   upsertArtifact,
 } from "../utils/db";
 import type { SightingRow } from "../utils/db";
-import { getSettings } from "../utils/settings";
+import { getSettings, setSettings } from "../utils/settings";
 import { decideAlert } from "./alerts";
 import { MAX_ARTIFACT_BYTES } from "../shared/protocol";
 import type {
+  ActivityEvent,
+  ActivityReport,
   CaptureRequest,
   ExtensionMessage,
+  ModuleRow,
   SkipRequest,
   TabReport,
   TabArtifactView,
 } from "../shared/protocol";
 
 const LOG = "[wasm-sentry]";
+
+/** When this worker instance started. Shown in the dashboard as proof of life. */
+const WORKER_STARTED_AT = Date.now();
+
+/** Set false if the observational network listener could not be registered. */
+let networkObserverActive = false;
 
 /* ------------------------------------------------------------------ */
 /* Capture intake                                                      */
@@ -78,7 +92,10 @@ async function handleCapture(
 
   const hash = await sha256(bytes);
 
-  const { isNew } = await upsertArtifact({ hash, kind, size: bytes.length, bytes }, now);
+  const { isNew } = await upsertArtifact(
+    { hash, kind, size: bytes.length, bytes, pageUrl: message.pageUrl },
+    now,
+  );
 
   const sighting: SightingRow = {
     hash,
@@ -91,6 +108,17 @@ async function handleCapture(
     timestamp: now,
   };
   await addSighting(sighting);
+
+  await addEvent({
+    timestamp: now,
+    kind: "captured",
+    pageUrl: message.pageUrl,
+    tabId,
+    hash,
+    size: bytes.length,
+    api: message.api,
+    ...(isNew ? {} : { detail: "already seen" }),
+  });
 
   if (isNew) {
     console.log(`${LOG} new module ${hash.slice(0, 12)} (${bytes.length} B) via ${message.api}`);
@@ -110,6 +138,18 @@ async function handleCapture(
         ? `${analysis.summary?.functionCount} functions, ${analysis.summary?.totalLoops} loops`
         : analysis.reason,
     );
+    await addEvent({
+      timestamp: Date.now(),
+      kind: "analysed",
+      pageUrl: message.pageUrl,
+      tabId,
+      hash,
+      size: bytes.length,
+      ...(analysis.risk ? { level: analysis.risk.level, score: analysis.risk.score } : {}),
+      detail: analysis.ok
+        ? (analysis.risk?.findings[0]?.title ?? "no findings")
+        : (analysis.reason ?? "analysis failed"),
+    });
   }
 
   const report = await refreshBadge(tabId);
@@ -121,6 +161,15 @@ async function handleSkip(
   message: SkipRequest,
   sender: chrome.runtime.MessageSender,
 ): Promise<{ ok: true }> {
+  await addEvent({
+    timestamp: Date.now(),
+    kind: "skipped",
+    pageUrl: message.pageUrl,
+    tabId: sender.tab?.id ?? -1,
+    size: message.size,
+    api: message.api,
+    detail: message.reason,
+  });
   await addNote({
     url: message.url,
     pageUrl: message.pageUrl,
@@ -203,6 +252,83 @@ async function buildTabReport(tabId: number): Promise<TabReport> {
   };
 }
 
+/* ------------------------------------------------------------------ */
+/* Cross-tab activity, for the dashboard                               */
+/* ------------------------------------------------------------------ */
+
+const MAX_FEED_EVENTS = 200;
+const MAX_MODULE_ROWS = 200;
+
+async function notificationLevel(): Promise<string> {
+  if (!chrome.notifications?.getPermissionLevel) return "unavailable";
+  return new Promise((resolve) => {
+    try {
+      chrome.notifications.getPermissionLevel((level) => resolve(level));
+    } catch {
+      resolve("unavailable");
+    }
+  });
+}
+
+/**
+ * Everything the dashboard renders, in one round trip.
+ *
+ * The point of this view is evidence rather than data: a user cannot see the
+ * capture hooks firing, so the extension has to show its own work -- what it
+ * saw, when, and whether its moving parts are actually alive.
+ */
+async function buildActivityReport(): Promise<ActivityReport> {
+  const [rows, eventRows, settings, artifactCount, level] = await Promise.all([
+    getAllArtifacts(MAX_MODULE_ROWS),
+    getRecentEvents(MAX_FEED_EVENTS),
+    getSettings(),
+    countArtifacts(),
+    notificationLevel(),
+  ]);
+
+  const analyses = await getAnalyses(rows.map((row) => row.hash));
+
+  const modules: ModuleRow[] = rows.map((row) => {
+    const analysis = analyses.get(row.hash);
+    return {
+      hash: row.hash,
+      size: row.size,
+      seenCount: row.seenCount,
+      firstSeen: row.firstSeen,
+      lastSeen: row.lastSeen,
+      lastPageUrl: row.lastPageUrl,
+      ...(analysis ? { analysis } : {}),
+    };
+  });
+
+  const events: ActivityEvent[] = eventRows.map((row) => ({
+    timestamp: row.timestamp,
+    kind: row.kind,
+    pageUrl: row.pageUrl,
+    ...(row.hash !== undefined ? { hash: row.hash } : {}),
+    ...(row.size !== undefined ? { size: row.size } : {}),
+    ...(row.api !== undefined ? { api: row.api } : {}),
+    ...(row.level !== undefined ? { level: row.level } : {}),
+    ...(row.score !== undefined ? { score: row.score } : {}),
+    ...(row.detail !== undefined ? { detail: row.detail } : {}),
+  }));
+
+  const lastCapture = eventRows.find((row) => row.kind === "captured");
+
+  return {
+    status: {
+      workerStartedAt: WORKER_STARTED_AT,
+      networkObserver: networkObserverActive,
+      notificationLevel: level,
+      artifactCount,
+      lastCaptureAt: lastCapture?.timestamp ?? null,
+    },
+    settings: settings as unknown as Record<string, unknown>,
+    events,
+    modules,
+  };
+}
+
 /** Badge colours follow the risk bands, so the toolbar carries the verdict. */
 const BADGE_COLOURS: Record<RiskLevel, string> = {
   benign: "#1f6feb",
@@ -265,6 +391,17 @@ async function maybeAlert(tabId: number, report: TabReport): Promise<void> {
     priority: 2,
   });
 
+  await addEvent({
+    timestamp: Date.now(),
+    kind: "alerted",
+    pageUrl: report.scorecard.pageUrl,
+    tabId,
+    ...(worst ? { hash: worst.hash } : {}),
+    level: report.scorecard.level,
+    score: report.scorecard.score,
+    detail: decision.message,
+  });
+
   const tabs = await sessionValue<Record<string, number>>(NOTIFICATION_TABS, {});
   await chrome.storage.session.set({
     [ALERTED_KEY]: [...seen, decision.key].slice(-200),
@@ -311,6 +448,24 @@ chrome.runtime.onMessage.addListener((raw, sender, sendResponse) => {
         break;
       case "wasm-sentry:tab-report":
         work = buildTabReport(message.tabId);
+        break;
+      case "wasm-sentry:activity":
+        work = buildActivityReport();
+        break;
+      case "wasm-sentry:update-settings":
+        work = setSettings(message.patch as Parameters<typeof setSettings>[0]);
+        break;
+      case "wasm-sentry:clear-all":
+        work = clearAll().then(async () => {
+          await addEvent({
+            timestamp: Date.now(),
+            kind: "cleared",
+            pageUrl: "",
+            tabId: -1,
+            detail: "stored state wiped from the dashboard",
+          });
+          return { ok: true };
+        });
         break;
       default:
         return false;
@@ -371,6 +526,7 @@ try {
     { urls: ["<all_urls>"] },
     ["responseHeaders"],
   );
+  networkObserverActive = true;
 } catch (error) {
   // Observational webRequest is only used to notice modules the main-world hook
   // could not see. Losing it costs coverage reporting, not capture.
