@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
+import type { AnalysisSummary } from "@wasm-sentry/core";
 import type { TabReport, TabArtifactView } from "../shared/protocol";
 import "./popup.css";
 
@@ -16,10 +17,64 @@ const NOTE_LABELS: Record<string, string> = {
   "network-only": "loaded outside the page world",
 };
 
+function percent(value: number): string {
+  return `${(value * 100).toFixed(1)}%`;
+}
+
+/**
+ * The structural facts, stated plainly. There is no verdict yet -- risk scoring
+ * is the next phase -- and showing the evidence without one is deliberate:
+ * a number a user can check beats a banner they have to trust.
+ */
+function StaticFacts({ summary }: { summary: AnalysisSummary }): React.JSX.Element {
+  const flags: string[] = [];
+  if (summary.memoryShared) flags.push("shared memory");
+  if (summary.memoryGrowSites > 0) flags.push(`${summary.memoryGrowSites} memory.grow`);
+  if (summary.indirectCalls > 0) flags.push(`${summary.indirectCalls} indirect calls`);
+  if (summary.stripped) flags.push("stripped");
+  if (summary.truncatedFunctions > 0) flags.push(`${summary.truncatedFunctions} undecodable`);
+
+  return (
+    <div className="facts">
+      <dl>
+        <div><dt>functions</dt><dd>{summary.functionCount}</dd></div>
+        <div><dt>loops</dt><dd>{summary.totalLoops}</dd></div>
+        <div><dt>max nesting</dt><dd>{summary.maxNesting}</dd></div>
+        <div><dt>bitwise</dt><dd>{percent(summary.bitwiseRatio)}</dd></div>
+        <div><dt>float</dt><dd>{percent(summary.floatRatio)}</dd></div>
+        <div>
+          <dt>memory</dt>
+          <dd>
+            {summary.memoryInitialPages}p
+            {summary.memoryMaxPages !== null ? ` / ${summary.memoryMaxPages}p` : ""}
+          </dd>
+        </div>
+      </dl>
+
+      {flags.length > 0 && (
+        <div className="flags">
+          {flags.map((flag) => (
+            <span key={flag} className="flag">{flag}</span>
+          ))}
+        </div>
+      )}
+
+      {summary.importNames.length > 0 && (
+        <div className="imports" title={summary.importNames.join("\n")}>
+          imports {summary.importNames.slice(0, 3).join(", ")}
+          {summary.importNames.length > 3 ? ` +${summary.importNames.length - 3} more` : ""}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ArtifactCard({ artifact }: { artifact: TabArtifactView }): React.JSX.Element {
   const label = artifact.url.startsWith("inline:")
     ? `compiled from memory (${artifact.api})`
     : artifact.url;
+  const analysis = artifact.analysis;
+
   return (
     <li className="artifact">
       <div className="artifact-head">
@@ -33,8 +88,21 @@ function ArtifactCard({ artifact }: { artifact: TabArtifactView }): React.JSX.El
         <span className="tag">{artifact.kind}</span>
         {artifact.api ? <span className="tag">{artifact.api}</span> : null}
         {artifact.sightings > 1 ? <span className="tag">x{artifact.sightings}</span> : null}
-        <span className="pending">awaiting analysis</span>
+        {analysis?.ok ? (
+          <span className="pending">parsed in {analysis.elapsedMs}ms</span>
+        ) : (
+          <span className="pending">{analysis ? analysis.reason : "awaiting analysis"}</span>
+        )}
       </div>
+
+      {analysis?.summary && <StaticFacts summary={analysis.summary} />}
+
+      {analysis?.watHeader && (
+        <details className="wat">
+          <summary>disassembly</summary>
+          <pre>{analysis.watHeader}</pre>
+        </details>
+      )}
     </li>
   );
 }

@@ -12,12 +12,15 @@
  * the badge is always recomputed from storage rather than from a counter that
  * would not survive.
  */
-import { sha256, base64ToBytes, sniff } from "@wasm-sentry/core";
+import { analyzeWasm, base64ToBytes, sha256, sniff, summarise } from "@wasm-sentry/core";
 import {
   addNote,
   addSighting,
   clearTab,
+  getAnalyses,
   getArtifacts,
+  hasAnalysis,
+  saveAnalysis,
   getNotesByTab,
   getSightingsByTab,
   prune,
@@ -83,8 +86,21 @@ async function handleCapture(
   if (isNew) {
     console.log(`${LOG} new module ${hash.slice(0, 12)} (${bytes.length} B) via ${message.api}`);
     void prune().catch(() => undefined);
-    // Phase 2 hooks the static analysis pipeline in here; Phase 1 stops at
-    // durable, de-duplicated capture.
+  }
+
+  // Analysis is keyed by hash, so a module already characterised on another
+  // site costs nothing here. Awaiting it keeps the worker alive through the
+  // parse; it is synchronous and budgeted, so this is bounded work, not a
+  // reason to reach for a keepalive.
+  if (!(await hasAnalysis(hash))) {
+    const analysis = summarise(hash, analyzeWasm(bytes));
+    await saveAnalysis(analysis);
+    console.log(
+      `${LOG} analysed ${hash.slice(0, 12)} in ${analysis.elapsedMs}ms:`,
+      analysis.ok
+        ? `${analysis.summary?.functionCount} functions, ${analysis.summary?.totalLoops} loops`
+        : analysis.reason,
+    );
   }
 
   await refreshBadge(tabId);
@@ -125,9 +141,11 @@ async function buildTabReport(tabId: number): Promise<TabReport> {
     }
   }
 
-  const rows = await getArtifacts([...latest.keys()]);
+  const hashes = [...latest.keys()];
+  const [rows, analyses] = await Promise.all([getArtifacts(hashes), getAnalyses(hashes)]);
   const artifacts: TabArtifactView[] = rows.map((row) => {
     const entry = latest.get(row.hash)!;
+    const analysis = analyses.get(row.hash);
     return {
       hash: row.hash,
       kind: row.kind,
@@ -138,6 +156,7 @@ async function buildTabReport(tabId: number): Promise<TabReport> {
       firstSeen: row.firstSeen,
       lastSeen: row.lastSeen,
       sightings: entry.count,
+      ...(analysis ? { analysis } : {}),
     };
   });
   artifacts.sort((a, b) => b.lastSeen - a.lastSeen);

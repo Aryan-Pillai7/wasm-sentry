@@ -82,3 +82,49 @@ ul { list-style: none; margin: 0; padding: 0; }
 .notes li { display: flex; gap: 8px; padding: 2px 0; }
 .reason { color: var(--muted); white-space: nowrap; }
 .note-url { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); opacity: 0.8; }
+
+.facts { margin-top: 8px; }
+
+.facts dl {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px 10px;
+  margin: 0;
+}
+
+.facts dl > div { display: flex; justify-content: space-between; gap: 6px; }
+.facts dt { color: var(--muted); font-size: 11px; }
+.facts dd { margin: 0; font-variant-numeric: tabular-nums; font-size: 11px; }
+
+.flags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+
+.flag {
+  background: var(--tag-bg);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 11px;
+}
+
+.imports {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wat { margin-top: 8px; }
+.wat summary { cursor: pointer; font-size: 11px; color: var(--muted); }
+
+.wat pre {
+  margin: 6px 0 0;
+  max-height: 220px;
+  overflow: auto;
+  background: var(--tag-bg);
+  border-radius: 6px;
+  padding: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.4;
+}

@@ -12,7 +12,7 @@
  *    through which API. That is what makes per-tab and per-site reporting
  *    possible without duplicating payloads.
  */
-import type { ArtifactKind, CaptureSource, WasmApi } from "@wasm-sentry/core";
+import type { ArtifactAnalysis, ArtifactKind, CaptureSource, WasmApi } from "@wasm-sentry/core";
 
 const DB_NAME = "wasm-sentry";
 const DB_VERSION = 2;
@@ -83,6 +83,8 @@ export function openDB(): Promise<IDBDatabase> {
       const notes = db.createObjectStore("notes", { keyPath: "id", autoIncrement: true });
       notes.createIndex("by_tab", "tabId");
 
+      // Verdicts are keyed by artifact hash too, so a module already analysed
+      // on another site is never analysed twice.
       db.createObjectStore("results", { keyPath: "hash" });
     };
 
@@ -167,6 +169,28 @@ export async function getArtifacts(hashes: readonly string[]): Promise<ArtifactR
       hashes.map((hash) => promisify<ArtifactRow | undefined>(store.get(hash))),
     );
     return rows.filter((row): row is ArtifactRow => row !== undefined);
+  });
+}
+
+export async function saveAnalysis(analysis: ArtifactAnalysis): Promise<void> {
+  await withStore("results", "readwrite", (store) => promisify(store.put(analysis)));
+}
+
+export async function getAnalyses(hashes: readonly string[]): Promise<Map<string, ArtifactAnalysis>> {
+  return withStore("results", "readonly", async (store) => {
+    const rows = await Promise.all(
+      hashes.map((hash) => promisify<ArtifactAnalysis | undefined>(store.get(hash))),
+    );
+    return new Map(
+      rows.filter((row): row is ArtifactAnalysis => row !== undefined).map((row) => [row.hash, row]),
+    );
+  });
+}
+
+export async function hasAnalysis(hash: string): Promise<boolean> {
+  return withStore("results", "readonly", async (store) => {
+    const row = await promisify<ArtifactAnalysis | undefined>(store.get(hash));
+    return row !== undefined;
   });
 }
 

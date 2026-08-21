@@ -17,7 +17,8 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "tsx --test test/*.test.ts"
+    "test": "tsx --test test/*.test.ts",
+    "inspect": "tsx scripts/inspect.ts"
   },
   "devDependencies": {
     "@types/node": "^24.12.2"

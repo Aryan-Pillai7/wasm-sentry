@@ -7,15 +7,15 @@ never touch the network — disassembles it, and explains what it does in terms 
 person can act on. It is built as a Chrome MV3 extension with a shared analysis
 engine that runs unchanged in the browser, in Node, and in tests.
 
-> Status: Phase 1 of 5. The capture layer is complete and tested; static
-> analysis, heuristics and scoring are in progress. See
+> Status: Phase 2 of 5. Capture, disassembly and static analysis are complete
+> and tested; heuristics, runtime monitoring and scoring are next. See
 > [`docs/architecture.md`](docs/architecture.md) for the full pipeline.
 
 ## Layout
 
 | Path | What it is |
 |---|---|
-| `core/` | `@wasm-sentry/core` — format sniffing, hashing, and (from Phase 2) the Wasm parser, feature extractor and heuristics. Zero runtime dependencies. |
+| `core/` | `@wasm-sentry/core` — format sniffing, hashing, the Wasm parser, CFG builder, WAT renderer and feature extractor. Zero runtime dependencies. |
 | `extension/` | Chrome MV3 extension: main-world capture hook, service worker, popup. |
 | `backend/` | Optional Node service for opt-in deep analysis. |
 | `docs/` | Architecture and API documentation. |
@@ -61,6 +61,20 @@ the bytes that ran. Hooking the API gets the exact buffer the engine received.
 
 Artifacts are identified by the SHA-256 of their contents, never by URL, so one
 module served under a thousand cache-busted URLs is analysed once.
+
+## Analysis
+
+Captured modules are parsed in the extension by a dependency-free TypeScript
+decoder: sections, imports and exports, every function body, and an exact
+control flow graph per function. WAT is rendered from that same decode rather
+than by a second tool, so the listing you read is the decode the detector
+reasoned about.
+
+You can point the parser at any module from the command line:
+
+```bash
+npm run inspect -w @wasm-sentry/core -- path/to/module.wasm
+```
 
 ## Privacy
 

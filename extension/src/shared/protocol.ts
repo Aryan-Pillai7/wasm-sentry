@@ -1,4 +1,4 @@
-import type { ArtifactKind, CaptureSource, WasmApi } from "@wasm-sentry/core";
+import type { ArtifactAnalysis, ArtifactKind, CaptureSource, WasmApi } from "@wasm-sentry/core";
 
 /**
  * Wire protocol between the three contexts the extension runs in.
@@ -83,6 +83,8 @@ export interface TabArtifactView {
   lastSeen: number;
   /** Times seen in this tab (not globally). */
   sightings: number;
+  /** Static analysis, once it has run. Absent means still queued. */
+  analysis?: ArtifactAnalysis;
 }
 
 /** Everything the popup needs to render one tab. */

@@ -41,18 +41,39 @@ The two hops between contexts are described in
 and is therefore forgeable; the service worker treats everything from it as
 untrusted input, re-sniffs the format and re-hashes the bytes itself.
 
-### 2. Disassembly — *Phase 2*
+### 2. Disassembly — *complete*
 
-A pure-TypeScript streaming parser in `@wasm-sentry/core` walks the binary's
-sections and decodes function bodies into instructions. Emitting WAT is a view
-over that decode, not a separate tool: it keeps the engine dependency-free, so
-the same code runs in the extension, in the backend and under `node --test`.
+A pure-TypeScript parser in `@wasm-sentry/core` walks the binary's sections and
+decodes function bodies into instructions. Emitting WAT is a view over that
+decode, not a separate tool: it keeps the engine dependency-free, so the same
+code runs in the extension, in the backend and under `node --test`, and the
+listing a user reads is the same decode the detector reasoned about.
 
-### 3. Static analysis — *Phase 2*
+The decoder is total. It either returns a faithful instruction list or stops at
+the first byte it cannot account for and says so; it never guesses an operand
+width, because a wrong guess desynchronises the stream and every instruction
+after it is fiction. A section that fails to parse costs that section, not the
+module.
 
-Per-module features (imports, exports, memory declarations, opcode histograms,
-instruction n-grams) and a control-flow graph per function, from which loop
-structure and nesting depth fall out.
+Measured on real-world output: 643 KB of Emscripten-compiled SQLite parses in
+165 ms (1,879 functions, 285k instructions, no warnings); 2.4 MB of Rust
+`wasm-bindgen` output in 399 ms (1,433 functions, 975k instructions).
+
+### 3. Static analysis — *complete*
+
+Per-module features (imports, exports, memory declarations, opcode histograms
+by name and by category) and an exact control flow graph per function.
+
+WebAssembly's control flow is structured -- no computed goto, every branch
+targeting an enclosing frame by relative depth -- so the CFG is built in one pass
+with none of the indirect-jump guesswork that makes native-binary CFG recovery
+expensive, and a loop it reports is a loop the engine will actually execute.
+Loop count, nesting depth, back edges and the "hottest" loop (largest body
+weighted by bitwise density) fall out of it.
+
+Analysis is budgeted: it stops after a fixed instruction count and reports how
+many functions it skipped, so a hostile 50 MB module cannot hold the service
+worker open.
 
 ### 4. Heuristics — *Phase 3*
 
