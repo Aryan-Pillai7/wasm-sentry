@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import type { AnalysisSummary } from "@wasm-sentry/core";
+import type { AnalysisSummary, Finding, PageScorecard, RiskAssessment } from "@wasm-sentry/core";
 import type { TabReport, TabArtifactView } from "../shared/protocol";
 import "./popup.css";
 
@@ -16,6 +16,64 @@ const NOTE_LABELS: Record<string, string> = {
   "read-failed": "could not be read",
   "network-only": "loaded outside the page world",
 };
+
+const LEVEL_LABELS: Record<string, string> = {
+  benign: "No concerns",
+  low: "Minor notes",
+  medium: "Worth a look",
+  high: "Likely unwanted",
+  critical: "Almost certainly unwanted",
+};
+
+/**
+ * The Privacy Scorecard.
+ *
+ * The score is never shown on its own. It sits above the findings that produced
+ * it and states its own coverage, because a verdict a user cannot interrogate
+ * is a verdict they cannot act on -- which is the failure mode this project set
+ * out to fix.
+ */
+function Scorecard({ card }: { card: PageScorecard }): React.JSX.Element {
+  return (
+    <section className={`scorecard level-${card.level}`}>
+      <div className="score-row">
+        <span className="level">{LEVEL_LABELS[card.level] ?? card.level}</span>
+        {card.moduleCount > 0 && <span className="score">{card.score}/100</span>}
+      </div>
+      <p className="headline">{card.headline}</p>
+      {card.unanalysedCount > 0 && (
+        <p className="caveat">
+          {card.unanalysedCount} module(s) were seen but not analysed — this verdict does not cover
+          them.
+        </p>
+      )}
+    </section>
+  );
+}
+
+function FindingRow({ finding }: { finding: Finding }): React.JSX.Element {
+  return (
+    <li className={`finding sev-${finding.severity}`}>
+      <div className="finding-head">
+        <span className="finding-title">{finding.title}</span>
+        <span className="confidence">{Math.round(finding.confidence * 100)}%</span>
+      </div>
+      <p className="evidence">{finding.evidence}</p>
+      {finding.reference && <p className="reference">{finding.reference}</p>}
+    </li>
+  );
+}
+
+function Findings({ risk }: { risk: RiskAssessment }): React.JSX.Element | null {
+  if (risk.findings.length === 0) return null;
+  return (
+    <ul className="findings">
+      {risk.findings.map((finding) => (
+        <FindingRow key={finding.id} finding={finding} />
+      ))}
+    </ul>
+  );
+}
 
 function percent(value: number): string {
   return `${(value * 100).toFixed(1)}%`;
@@ -88,6 +146,9 @@ function ArtifactCard({ artifact }: { artifact: TabArtifactView }): React.JSX.El
         <span className="tag">{artifact.kind}</span>
         {artifact.api ? <span className="tag">{artifact.api}</span> : null}
         {artifact.sightings > 1 ? <span className="tag">x{artifact.sightings}</span> : null}
+        {analysis?.risk && (
+          <span className={`verdict level-${analysis.risk.level}`}>{analysis.risk.score}</span>
+        )}
         {analysis?.ok ? (
           <span className="pending">parsed in {analysis.elapsedMs}ms</span>
         ) : (
@@ -95,6 +156,7 @@ function ArtifactCard({ artifact }: { artifact: TabArtifactView }): React.JSX.El
         )}
       </div>
 
+      {analysis?.risk && <Findings risk={analysis.risk} />}
       {analysis?.summary && <StaticFacts summary={analysis.summary} />}
 
       {analysis?.watHeader && (
@@ -140,10 +202,7 @@ function Popup(): React.JSX.Element {
   if (error) return <div className="panel error">{error}</div>;
   if (!report) return <div className="panel muted">Reading capture log…</div>;
 
-  // A network sighting for a URL we also captured is the same module seen
-  // twice; only surface the ones that are genuinely a blind spot.
-  const capturedUrls = new Set(report.artifacts.map((a) => a.url));
-  const notes = report.notes.filter((note) => !capturedUrls.has(note.url));
+  const notes = report.notes;
 
   return (
     <div className="panel">
@@ -151,6 +210,8 @@ function Popup(): React.JSX.Element {
         <h1>Wasm-Sentry</h1>
         <span className="count">{report.artifacts.length} modules</span>
       </header>
+
+      <Scorecard card={report.scorecard} />
 
       {report.artifacts.length === 0 ? (
         <p className="muted">

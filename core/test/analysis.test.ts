@@ -73,14 +73,14 @@ test("separates integer-loop work from float work in the feature vector", () => 
   assert.deepEqual(benign.features.importNames, ["env.log"]);
 });
 
-test("identifies the hottest loop and attributes it to a function", () => {
+test("does not nominate a short loop as a compute kernel", () => {
   const result = analyzeWasm(minerLikeModule());
   assert.equal(result.ok, true);
   if (!result.ok) return;
 
-  assert.notEqual(result.features.hottestLoop, null);
-  assert.equal(result.features.hottestLoop!.functionIndex, 0);
-  assert.ok(result.features.hottestLoop!.bitwiseRatio > 0);
+  // The fixture's loop is eleven instructions. Calling that a kernel is how a
+  // detector ends up flagging every checksum in every module on the web.
+  assert.equal(result.features.kernelCandidate, null);
 });
 
 test("reports a stripped module as stripped", () => {

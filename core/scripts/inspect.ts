@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { analyzeWasm } from "./src/analysis.js";
+import { analyzeWasm } from "../src/analysis.js";
+import { summarise } from "../src/report.js";
 
 for (const path of process.argv.slice(2)) {
   const bytes = new Uint8Array(readFileSync(path));
@@ -25,4 +26,13 @@ for (const path of process.argv.slice(2)) {
     ].join(" | "),
   );
   if (result.warnings.length) console.log("   warnings:", result.warnings.slice(0, 3));
+
+  const report = summarise("cli", result);
+  const risk = report.risk;
+  if (risk) {
+    console.log(`   risk: ${risk.score}/100 ${risk.level} (coverage ${(risk.coverage * 100).toFixed(0)}%) -- ${risk.headline}`);
+    for (const finding of risk.findings) {
+      console.log(`     [${finding.severity}] ${finding.id} c=${finding.confidence} :: ${finding.evidence}`);
+    }
+  }
 }

@@ -114,3 +114,60 @@ export function benignModule(): Uint8Array {
     section(10, vec([[...uleb(body.length), ...body]])),
   ]);
 }
+
+/**
+ * A module with the full cryptojacking shape: a shared memory sized for
+ * per-worker scratchpads, atomics, a pool-facing import, and one exported
+ * function whose body is a long loop of rotates and xors over an accumulator.
+ *
+ * Built rather than recorded, because a real miner sample is not something to
+ * commit to a repository, and because a synthetic module lets each individual
+ * signal be switched off to check that no single one carries the verdict.
+ */
+export function syntheticMinerModule(options: { shared?: boolean; rounds?: number } = {}): Uint8Array {
+  const shared = options.shared ?? true;
+  const rounds = options.rounds ?? 25;
+
+  const round = (constant: number): number[] => [
+    0x20, 0x00, //   local.get 0
+    0x41, ...sleb(constant), // i32.const K
+    0x77, //         i32.rotl
+    0x20, 0x00, //   local.get 0
+    0x73, //         i32.xor
+    0x21, 0x00, //   local.set 0
+  ];
+
+  const loopBody: number[] = [];
+  for (let i = 0; i < rounds; i++) loopBody.push(...round((i * 7) % 31));
+
+  const body = [
+    ...vec([[...uleb(1), I32]]), // one i32 local
+    0x41, 0x00, //     i32.const 0
+    0xfe, 0x10, 0x02, 0x00, // i32.atomic.load align=2 offset=0
+    0x1a, //           drop
+    0x03, 0x40, //     loop
+    ...loopBody,
+    0x20, 0x00, //       local.get 0
+    0x41, 0x00, //       i32.const 0
+    0x4a, //             i32.gt_s
+    0x0d, 0x00, //       br_if 0
+    0x0b, //           end
+    0x20, 0x00, //     local.get 0
+    0x0b, //           end
+  ];
+
+  // flags 0x03 = shared with a declared maximum; 0x01 = maximum only.
+  const memoryLimits = shared ? [0x03, ...uleb(16), ...uleb(32)] : [0x01, ...uleb(16), ...uleb(32)];
+
+  return module([
+    section(1, vec([
+      [0x60, ...vec([]), ...vec([])], // type 0: () -> ()   for the import
+      [0x60, ...vec([]), ...vec([[I32]])], // type 1: () -> i32
+    ])),
+    section(2, vec([[...name("pool"), ...name("websocket_send"), 0x00, ...uleb(0)]])),
+    section(3, vec([[1]])),
+    section(5, vec([memoryLimits])),
+    section(7, vec([[...name("run"), 0x00, ...uleb(1)]])),
+    section(10, vec([[...uleb(body.length), ...body]])),
+  ]);
+}

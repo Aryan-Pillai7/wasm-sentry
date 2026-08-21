@@ -75,12 +75,16 @@ Analysis is budgeted: it stops after a fixed instruction count and reports how
 many functions it skipped, so a hostile 50 MB module cannot hold the service
 worker open.
 
-### 4. Heuristics — *Phase 3*
+### 4. Heuristics — *complete*
 
-Rules over those features: integer/rotate opcode density typical of hashing
-inner loops, unbounded memory growth, WebSocket imports paired with worker
-fan-out, and the structural signatures of known mining families. This is the
-explainable baseline, and the bar the classifier has to beat.
+Rules over those features, each producing evidence with the numbers that
+triggered it rather than a bare verdict. Calibrated against real compiled
+output, which is where the design earned its shape: a legitimate Rust image
+codec contains a loop that is statically indistinguishable from a hashing
+kernel, so density alone can never reach the top band and escalation requires
+corroborating infrastructure. See [`detection.md`](detection.md).
+
+This is the explainable baseline, and the bar the classifier has to beat.
 
 ### 5. Runtime monitoring — *Phase 4*
 
@@ -94,11 +98,13 @@ purpose: without the feature extractor and a labelled corpus it has nothing to
 learn from, and without the heuristic baseline there is nothing to compare it
 against.
 
-### 7. Risk aggregation and Privacy Scorecard — *Phase 3 onward*
+### 7. Risk aggregation and Privacy Scorecard — *complete for static findings*
 
-Findings from every stage are combined into a single banded score with the
-evidence attached, because a verdict a user cannot interrogate is a verdict they
-cannot act on.
+Findings are combined into a banded score that saturates, so corroborated
+evidence outranks accumulated hints. The score is never shown alone: it ships
+with the findings that produced it and with a coverage figure, because a verdict
+a user cannot interrogate is a verdict they cannot act on. Runtime findings join
+the same aggregation in Phase 4.
 
 ## Storage
 

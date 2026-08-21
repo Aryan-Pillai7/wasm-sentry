@@ -76,8 +76,14 @@ export interface FunctionFeatures {
   maxNesting: number;
   /** Instructions in the largest loop body. */
   largestLoop: number;
+  bitwiseOps: number;
+  integerOps: number;
   /** Share of instructions in this function that are bitwise integer work. */
   bitwiseRatio: number;
+  /** Share that is integer arithmetic or bitwise work combined. */
+  arithmeticRatio: number;
+  /** Calls per instruction. A hashing kernel makes almost none. */
+  callRatio: number;
   calls: number;
   indirectCalls: number;
   memoryOps: number;
@@ -85,6 +91,28 @@ export interface FunctionFeatures {
   /** Present when the body could not be fully decoded. */
   truncated?: string;
 }
+
+/** A function whose shape is consistent with a compute kernel. */
+export interface KernelCandidate {
+  functionIndex: number;
+  /** Instructions in its largest loop. */
+  loopSize: number;
+  instructionCount: number;
+  bitwiseRatio: number;
+  arithmeticRatio: number;
+  callRatio: number;
+}
+
+/**
+ * Structural filter for kernel candidates.
+ *
+ * A hashing inner loop is register arithmetic and nothing else: no calls out,
+ * no floating point. These bounds exclude the bulk of compiled code without
+ * making any claim about what the survivors are -- that judgement belongs to
+ * the heuristics, which have the corroborating signals to make it.
+ */
+const KERNEL_MIN_LOOP = 40;
+const KERNEL_MAX_CALL_RATIO = 0.02;
 
 export interface ModuleFeatures {
   byteLength: number;
@@ -121,8 +149,15 @@ export interface ModuleFeatures {
   /** Functions skipped because the analysis budget ran out. */
   skippedFunctions: number;
 
-  /** The loop most consistent with a hashing kernel, if any stands out. */
-  hottestLoop: { functionIndex: number; size: number; bitwiseRatio: number } | null;
+  /**
+   * The function most consistent with a hashing kernel, if any qualifies.
+   *
+   * Selected by arithmetic density among functions that pass a structural
+   * filter, not by loop size. Ranking by size alone just finds the biggest
+   * function in the module -- on real Rust output that is a 53,000-instruction
+   * dispatch loop at 4% bitwise, which tells you nothing.
+   */
+  kernelCandidate: KernelCandidate | null;
 
   functions: FunctionFeatures[];
 }
@@ -153,6 +188,7 @@ function summariseFunction(
   truncated: string | undefined,
 ): FunctionFeatures {
   let bitwise = 0;
+  let integer = 0;
   let calls = 0;
   let indirectCalls = 0;
   let memoryOps = 0;
@@ -161,6 +197,7 @@ function summariseFunction(
   for (const instruction of instructions) {
     switch (categorise(instruction.name)) {
       case "bitwise": bitwise++; break;
+      case "integer": integer++; break;
       case "call":
         calls++;
         if (instruction.name === "call_indirect") indirectCalls++;
@@ -183,7 +220,11 @@ function summariseFunction(
     backEdges: cfg.backEdges.length,
     maxNesting: cfg.maxNesting,
     largestLoop,
+    bitwiseOps: bitwise,
+    integerOps: integer,
     bitwiseRatio: instructions.length > 0 ? bitwise / instructions.length : 0,
+    arithmeticRatio: instructions.length > 0 ? (bitwise + integer) / instructions.length : 0,
+    callRatio: instructions.length > 0 ? calls / instructions.length : 0,
     calls,
     indirectCalls,
     memoryOps,
@@ -210,7 +251,7 @@ export function extractFeatures(module: WasmModule, options: ExtractOptions = {}
   let maxNesting = 0;
   let indirectCalls = 0;
   let memoryGrowSites = 0;
-  let hottestLoop: ModuleFeatures["hottestLoop"] = null;
+  let kernelCandidate: KernelCandidate | null = null;
 
   for (const entry of module.code) {
     if (instructionCount >= budget) {
@@ -245,17 +286,27 @@ export function extractFeatures(module: WasmModule, options: ExtractOptions = {}
     maxNesting = Math.max(maxNesting, features.maxNesting);
     indirectCalls += features.indirectCalls;
 
-    // "Hottest" means the biggest loop body that is also dominated by bitwise
-    // integer work -- size alone would just find the largest function.
+    const qualifies =
+      features.largestLoop >= KERNEL_MIN_LOOP &&
+      features.floatOps === 0 &&
+      features.callRatio < KERNEL_MAX_CALL_RATIO;
+
+    // Rank by density, breaking ties on loop size. The reverse -- size first --
+    // selects the largest function in the module regardless of what it does.
     if (
-      features.largestLoop > 0 &&
-      (hottestLoop === null ||
-        features.largestLoop * features.bitwiseRatio > hottestLoop.size * hottestLoop.bitwiseRatio)
+      qualifies &&
+      (kernelCandidate === null ||
+        features.bitwiseRatio > kernelCandidate.bitwiseRatio ||
+        (features.bitwiseRatio === kernelCandidate.bitwiseRatio &&
+          features.largestLoop > kernelCandidate.loopSize))
     ) {
-      hottestLoop = {
+      kernelCandidate = {
         functionIndex: entry.index,
-        size: features.largestLoop,
+        loopSize: features.largestLoop,
+        instructionCount: features.instructionCount,
         bitwiseRatio: features.bitwiseRatio,
+        arithmeticRatio: features.arithmeticRatio,
+        callRatio: features.callRatio,
       };
     }
 
@@ -294,7 +345,7 @@ export function extractFeatures(module: WasmModule, options: ExtractOptions = {}
     decodedFunctions,
     truncatedFunctions,
     skippedFunctions,
-    hottestLoop,
+    kernelCandidate,
     functions,
   };
 }

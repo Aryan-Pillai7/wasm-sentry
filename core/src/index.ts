@@ -4,6 +4,8 @@ export * from "./hash.js";
 export * from "./base64.js";
 export * from "./analysis.js";
 export * from "./report.js";
+export * from "./heuristics.js";
+export * from "./scoring.js";
 export * from "./wasm/reader.js";
 export * from "./wasm/opcodes.js";
 export * from "./wasm/decode.js";

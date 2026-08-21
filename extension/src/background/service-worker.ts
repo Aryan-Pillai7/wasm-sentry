@@ -12,7 +12,15 @@
  * the badge is always recomputed from storage rather than from a counter that
  * would not survive.
  */
-import { analyzeWasm, base64ToBytes, sha256, sniff, summarise } from "@wasm-sentry/core";
+import {
+  analyzeWasm,
+  base64ToBytes,
+  buildScorecard,
+  sha256,
+  sniff,
+  summarise,
+} from "@wasm-sentry/core";
+import type { RiskAssessment, RiskLevel } from "@wasm-sentry/core";
 import {
   addNote,
   addSighting,
@@ -159,13 +167,31 @@ async function buildTabReport(tabId: number): Promise<TabReport> {
       ...(analysis ? { analysis } : {}),
     };
   });
-  artifacts.sort((a, b) => b.lastSeen - a.lastSeen);
+  // Riskiest first: the reason to open the popup is at the top, not buried
+  // under whatever loaded most recently.
+  artifacts.sort((a, b) => {
+    const byScore = (b.analysis?.risk?.score ?? -1) - (a.analysis?.risk?.score ?? -1);
+    return byScore !== 0 ? byScore : b.lastSeen - a.lastSeen;
+  });
+
+  // A network note for a URL we also captured is the same module counted
+  // twice; only the genuine blind spots are worth reporting.
+  const capturedUrls = new Set(artifacts.map((artifact) => artifact.url));
+  const blindSpots = notes.filter((note) => !capturedUrls.has(note.url));
+
+  const assessments = artifacts
+    .map((artifact) => artifact.analysis?.risk)
+    .filter((risk): risk is RiskAssessment => risk !== undefined);
+
+  const pageUrl = sightings.at(-1)?.pageUrl ?? "";
+  const unanalysed = artifacts.length - assessments.length + blindSpots.length;
 
   return {
     tabId,
-    pageUrl: sightings.at(-1)?.pageUrl ?? "",
+    pageUrl,
+    scorecard: buildScorecard(pageUrl, assessments, unanalysed),
     artifacts,
-    notes: notes.map((note) => ({
+    notes: blindSpots.map((note) => ({
       url: note.url,
       reason: note.reason,
       size: note.size,
@@ -175,12 +201,24 @@ async function buildTabReport(tabId: number): Promise<TabReport> {
   };
 }
 
+/** Badge colours follow the risk bands, so the toolbar carries the verdict. */
+const BADGE_COLOURS: Record<RiskLevel, string> = {
+  benign: "#1f6feb",
+  low: "#1f6feb",
+  medium: "#bf8700",
+  high: "#d1242f",
+  critical: "#a40e26",
+};
+
 async function refreshBadge(tabId: number): Promise<void> {
   if (tabId < 0) return;
-  const sightings = await getSightingsByTab(tabId);
-  const distinct = new Set(sightings.map((s) => s.hash)).size;
-  await chrome.action.setBadgeText({ tabId, text: distinct === 0 ? "" : String(distinct) });
-  await chrome.action.setBadgeBackgroundColor({ tabId, color: "#1f6feb" });
+  const report = await buildTabReport(tabId);
+  const count = report.artifacts.length;
+  await chrome.action.setBadgeText({ tabId, text: count === 0 ? "" : String(count) });
+  await chrome.action.setBadgeBackgroundColor({
+    tabId,
+    color: BADGE_COLOURS[report.scorecard.level],
+  });
 }
 
 /* ------------------------------------------------------------------ */

@@ -7,6 +7,10 @@
  * across the wire -- bounded, flat, and JSON-serialisable.
  */
 import type { StaticAnalysisResult } from "./analysis.js";
+import type { KernelCandidate } from "./wasm/features.js";
+import { evaluateHeuristics } from "./heuristics.js";
+import { assessRisk, coverageOf } from "./scoring.js";
+import type { RiskAssessment } from "./scoring.js";
 
 /** How many import/export names to retain. Enough to characterise, not to store. */
 const MAX_NAMES = 40;
@@ -31,7 +35,7 @@ export interface AnalysisSummary {
   skippedFunctions: number;
   importNames: string[];
   exportNames: string[];
-  hottestLoop: { functionIndex: number; size: number; bitwiseRatio: number } | null;
+  kernelCandidate: KernelCandidate | null;
 }
 
 export interface ArtifactAnalysis {
@@ -42,6 +46,8 @@ export interface ArtifactAnalysis {
   /** Why analysis failed, when `ok` is false. */
   reason?: string;
   summary?: AnalysisSummary;
+  /** Heuristic verdict with the evidence that produced it. */
+  risk?: RiskAssessment;
   /** The module's declared surface as WAT -- what a reviewer reads first. */
   watHeader?: string;
   warnings?: string[];
@@ -55,11 +61,15 @@ export function summarise(hash: string, result: StaticAnalysisResult): ArtifactA
   }
 
   const f = result.features;
+  const findings = evaluateHeuristics(f);
+  const risk = assessRisk(findings, coverageOf(f));
+
   return {
     hash,
     analyzedAt,
     elapsedMs: result.elapsedMs,
     ok: true,
+    risk,
     summary: {
       functionCount: f.functionCount,
       importedFunctionCount: f.importedFunctionCount,
@@ -80,7 +90,7 @@ export function summarise(hash: string, result: StaticAnalysisResult): ArtifactA
       skippedFunctions: f.skippedFunctions,
       importNames: f.importNames.slice(0, MAX_NAMES),
       exportNames: f.exportNames.slice(0, MAX_NAMES),
-      hottestLoop: f.hottestLoop,
+      kernelCandidate: f.kernelCandidate,
     },
     watHeader: result.watHeader,
     warnings: result.warnings.slice(0, 10),

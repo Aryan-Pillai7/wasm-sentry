@@ -7,8 +7,9 @@ never touch the network — disassembles it, and explains what it does in terms 
 person can act on. It is built as a Chrome MV3 extension with a shared analysis
 engine that runs unchanged in the browser, in Node, and in tests.
 
-> Status: Phase 2 of 5. Capture, disassembly and static analysis are complete
-> and tested; heuristics, runtime monitoring and scoring are next. See
+> Status: Phase 3 of 5. Capture, disassembly, static analysis, heuristic
+> detection and the Privacy Scorecard are complete and tested; runtime
+> monitoring and the ML classifier are next. See
 > [`docs/architecture.md`](docs/architecture.md) for the full pipeline.
 
 ## Layout
@@ -69,6 +70,12 @@ decoder: sections, imports and exports, every function body, and an exact
 control flow graph per function. WAT is rendered from that same decode rather
 than by a second tool, so the listing you read is the decode the detector
 reasoned about.
+
+Findings are then produced by rules over that feature vector — each one carrying
+the numbers that triggered it — and combined into a banded Privacy Scorecard.
+Thresholds are calibrated against real compiled output rather than guessed; see
+[`docs/detection.md`](docs/detection.md), including the false positive that
+reshaped the design.
 
 You can point the parser at any module from the command line:
 

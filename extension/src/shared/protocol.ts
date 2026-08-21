@@ -1,4 +1,10 @@
-import type { ArtifactAnalysis, ArtifactKind, CaptureSource, WasmApi } from "@wasm-sentry/core";
+import type {
+  ArtifactAnalysis,
+  ArtifactKind,
+  CaptureSource,
+  PageScorecard,
+  WasmApi,
+} from "@wasm-sentry/core";
 
 /**
  * Wire protocol between the three contexts the extension runs in.
@@ -91,6 +97,8 @@ export interface TabArtifactView {
 export interface TabReport {
   tabId: number;
   pageUrl: string;
+  /** The page-level verdict, rolled up from every module below. */
+  scorecard: PageScorecard;
   artifacts: TabArtifactView[];
   notes: Array<{ url: string; reason: string; size: number; api?: WasmApi; timestamp: number }>;
 }
