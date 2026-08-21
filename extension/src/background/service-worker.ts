@@ -36,6 +36,7 @@ import {
 } from "../utils/db";
 import type { SightingRow } from "../utils/db";
 import { getSettings } from "../utils/settings";
+import { decideAlert } from "./alerts";
 import { MAX_ARTIFACT_BYTES } from "../shared/protocol";
 import type {
   CaptureRequest,
@@ -111,7 +112,8 @@ async function handleCapture(
     );
   }
 
-  await refreshBadge(tabId);
+  const report = await refreshBadge(tabId);
+  if (report) await maybeAlert(tabId, report).catch(() => undefined);
   return { ok: true, hash };
 }
 
@@ -210,8 +212,8 @@ const BADGE_COLOURS: Record<RiskLevel, string> = {
   critical: "#a40e26",
 };
 
-async function refreshBadge(tabId: number): Promise<void> {
-  if (tabId < 0) return;
+async function refreshBadge(tabId: number): Promise<TabReport | null> {
+  if (tabId < 0) return null;
   const report = await buildTabReport(tabId);
   const count = report.artifacts.length;
   await chrome.action.setBadgeText({ tabId, text: count === 0 ? "" : String(count) });
@@ -219,7 +221,70 @@ async function refreshBadge(tabId: number): Promise<void> {
     tabId,
     color: BADGE_COLOURS[report.scorecard.level],
   });
+  return report;
 }
+
+/* ------------------------------------------------------------------ */
+/* Alerting                                                            */
+/* ------------------------------------------------------------------ */
+
+const ALERTED_KEY = "alertedKeys";
+const NOTIFICATION_TABS = "notificationTabs";
+
+/**
+ * Session storage, not memory: the service worker is killed between page loads,
+ * and an in-memory de-duplication set would reset with it, so the same module
+ * would notify again on every navigation.
+ */
+async function sessionValue<T>(key: string, fallback: T): Promise<T> {
+  const stored = await chrome.storage.session.get(key);
+  return (stored[key] as T | undefined) ?? fallback;
+}
+
+async function maybeAlert(tabId: number, report: TabReport): Promise<void> {
+  const settings = await getSettings();
+  const worst = report.artifacts[0]; // buildTabReport sorts riskiest-first
+  const seen = await sessionValue<string[]>(ALERTED_KEY, []);
+
+  const decision = decideAlert({
+    scorecard: report.scorecard,
+    topHash: worst?.hash,
+    topFinding: worst?.analysis?.risk?.findings[0]?.title,
+    enabled: settings.notifyOnHighRisk,
+    seen: new Set(seen),
+  });
+  if (!decision.notify) return;
+
+  const notificationId = `wasm-sentry:${decision.key}`;
+  await chrome.notifications.create(notificationId, {
+    type: "basic",
+    iconUrl: chrome.runtime.getURL("icons/icon-128.png"),
+    title: decision.title,
+    message: decision.message,
+    contextMessage: decision.contextMessage,
+    priority: 2,
+  });
+
+  const tabs = await sessionValue<Record<string, number>>(NOTIFICATION_TABS, {});
+  await chrome.storage.session.set({
+    [ALERTED_KEY]: [...seen, decision.key].slice(-200),
+    [NOTIFICATION_TABS]: { ...tabs, [notificationId]: tabId },
+  });
+}
+
+/** Clicking the notification takes the user to the page it is about. */
+chrome.notifications.onClicked.addListener((notificationId) => {
+  void (async () => {
+    const tabs = await sessionValue<Record<string, number>>(NOTIFICATION_TABS, {});
+    const tabId = tabs[notificationId];
+    if (tabId === undefined) return;
+    const tab = await chrome.tabs.get(tabId).catch(() => undefined);
+    if (!tab) return;
+    await chrome.tabs.update(tabId, { active: true });
+    if (tab.windowId !== undefined) await chrome.windows.update(tab.windowId, { focused: true });
+    await chrome.notifications.clear(notificationId);
+  })().catch(() => undefined);
+});
 
 /* ------------------------------------------------------------------ */
 /* Wiring                                                              */
@@ -321,5 +386,6 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (changeInfo.status !== "loading" || !changeInfo.url) return;
   void clearTab(tabId)
     .then(() => refreshBadge(tabId))
+    .then(() => undefined)
     .catch(() => undefined);
 });

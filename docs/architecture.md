@@ -131,3 +131,8 @@ IndexedDB, and the badge is recomputed from storage rather than a counter that
 would not survive.
 
 **Local-first.** Analysis runs in the extension. Upload is opt-in.
+
+**Interrupt sparingly.** The badge is the ambient channel and costs nothing;
+desktop notifications are reserved for the high and critical bands and
+de-duplicated per site and module, because a tool that notifies on every page
+trains its user to dismiss it unread.

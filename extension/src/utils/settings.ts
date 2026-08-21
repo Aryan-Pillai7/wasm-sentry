@@ -15,12 +15,18 @@ export interface Settings {
   backendUrl: string;
   /** Record network sightings of Wasm that the main-world hook missed. */
   trackNetworkSightings: boolean;
+  /**
+   * Raise a desktop notification when a page reaches the high or critical band.
+   * The badge is always updated regardless; this is the interrupting channel.
+   */
+  notifyOnHighRisk: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
   uploadEnabled: false,
   backendUrl: "http://localhost:3000",
   trackNetworkSightings: true,
+  notifyOnHighRisk: true,
 };
 
 const KEY = "settings";
