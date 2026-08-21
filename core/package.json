@@ -19,7 +19,8 @@
     "build": "tsc -p tsconfig.json",
     "test": "tsx --test test/*.test.ts",
     "inspect": "tsx scripts/inspect.ts",
-    "calibrate": "tsx scripts/calibrate.ts"
+    "calibrate": "tsx scripts/calibrate.ts",
+    "fixtures": "tsx scripts/emit-fixtures.ts"
   },
   "devDependencies": {
     "@types/node": "^24.12.2"

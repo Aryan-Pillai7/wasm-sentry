@@ -27,3 +27,6 @@ npm-debug.log*
 # --- private working material (never pushed) ---
 docs/private/
 *.pdf
+
+# generated test fixtures
+testbed/*.wasm

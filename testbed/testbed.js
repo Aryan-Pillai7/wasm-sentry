@@ -1,0 +1,111 @@
+/**
+ * Drives every capture path the extension hooks.
+ *
+ * The "miner" fixtures only perform arithmetic on a local that stays zero --
+ * they compute nothing, connect to nothing, and exit their loop immediately.
+ * They exist so the detector has a realistic shape to fire on without a real
+ * malware sample being involved.
+ */
+const log = document.getElementById("log");
+
+function say(text, cls = "") {
+  log.innerHTML += `\n<span class="${cls}">${text}</span>`;
+}
+
+/** Imports satisfying every fixture, so instantiation actually succeeds. */
+const IMPORTS = {
+  env: { log: () => {} },
+  pool: { websocket_send: () => {} },
+};
+
+async function bytesOf(name) {
+  const response = await fetch(name, { cache: "no-store" });
+  return response.arrayBuffer();
+}
+
+const RUNS = {
+  // Streaming: the extension must clone the Response without consuming the
+  // copy the engine reads.
+  async streaming() {
+    await WebAssembly.instantiateStreaming(fetch("benign.wasm"), IMPORTS);
+    say("1. instantiateStreaming(benign.wasm) ok", "ok");
+  },
+
+  // Bytes already in memory: webRequest sees the fetch, but only the API hook
+  // sees what was actually compiled.
+  async buffer() {
+    const bytes = await bytesOf("kernel-only.wasm");
+    await WebAssembly.instantiate(bytes, IMPORTS);
+    say("2. instantiate(ArrayBuffer) of kernel-only.wasm ok", "ok");
+  },
+
+  // compile() captures; the follow-up instantiate(Module) carries no bytes and
+  // must not be double-counted.
+  async compile() {
+    const bytes = await bytesOf("miner-no-threads.wasm");
+    const module = await WebAssembly.compile(bytes);
+    await WebAssembly.instantiate(module, IMPORTS);
+    say("3. compile + instantiate(Module) of miner-no-threads.wasm ok", "ok");
+  },
+
+  // The constructor path, wrapped with a Proxy so `new` and `instanceof` still
+  // behave.
+  async ctor() {
+    const bytes = await bytesOf("benign.wasm");
+    const module = new WebAssembly.Module(bytes);
+    say(`4. new WebAssembly.Module ok (instanceof: ${module instanceof WebAssembly.Module})`, "ok");
+  },
+
+  // Never touches the network as a .wasm request: webRequest cannot see this at
+  // all, which is the whole reason for hooking the API.
+  async blob() {
+    const bytes = await bytesOf("miner.wasm");
+    const url = URL.createObjectURL(new Blob([bytes], { type: "application/wasm" }));
+    try {
+      await WebAssembly.compileStreaming(fetch(url));
+      say("5. compileStreaming(blob:) of miner.wasm ok", "ok");
+    } catch (error) {
+      // Shared memory needs cross-origin isolation. The capture happens before
+      // the engine is called, so the module is still analysed.
+      say(`5. blob: compile threw (${error.message}) -- capture still happened`, "warn");
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  },
+
+  // Identical bytes twice: the popup must show one module, not two.
+  async dedupe() {
+    const bytes = await bytesOf("benign.wasm");
+    await WebAssembly.instantiate(bytes.slice(0), IMPORTS);
+    await WebAssembly.instantiate(bytes.slice(0), IMPORTS);
+    say("6. same bytes compiled twice -- expect ONE module in the popup", "ok");
+  },
+
+  // Content scripts do not run in workers, so this one is expected to show up
+  // as "not analysed", not as a captured module.
+  async worker() {
+    const worker = new Worker("worker.js");
+    worker.postMessage("go");
+    await new Promise((resolve) => {
+      worker.onmessage = (event) => {
+        say(`7. worker reported: ${event.data} -- expect a "not analysed" note`, "warn");
+        worker.terminate();
+        resolve();
+      };
+      setTimeout(resolve, 2000);
+    });
+  },
+};
+
+document.addEventListener("click", async (event) => {
+  const which = event.target.dataset?.run;
+  if (!which) return;
+  const names = which === "all" ? Object.keys(RUNS) : [which];
+  for (const name of names) {
+    try {
+      await RUNS[name]();
+    } catch (error) {
+      say(`${name} failed: ${error.message}`, "err");
+    }
+  }
+});

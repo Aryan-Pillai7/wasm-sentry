@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Wasm-Sentry testbed</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body {
+        font: 14px/1.5 ui-sans-serif, system-ui, sans-serif;
+        max-width: 760px;
+        margin: 40px auto;
+        padding: 0 20px;
+      }
+      h1 { font-size: 20px; }
+      p.lede { color: #6b7280; }
+      button { font: inherit; padding: 6px 12px; margin: 2px 4px 2px 0; }
+      #log {
+        margin-top: 20px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        white-space: pre-wrap;
+        border: 1px solid #8884;
+        border-radius: 8px;
+        padding: 12px;
+        min-height: 200px;
+      }
+      .ok { color: #2da44e; }
+      .warn { color: #bf8700; }
+      .err { color: #d1242f; }
+    </style>
+  </head>
+  <body>
+    <h1>Wasm-Sentry testbed</h1>
+    <p class="lede">
+      Each button loads a module through a different WebAssembly entry point. Open the Wasm-Sentry
+      popup afterwards and check that each one was captured, parsed and scored.
+    </p>
+
+    <p>
+      <button data-run="streaming">1. instantiateStreaming</button>
+      <button data-run="buffer">2. instantiate(buffer)</button>
+      <button data-run="compile">3. compile + instantiate(Module)</button>
+      <button data-run="ctor">4. new WebAssembly.Module</button>
+      <button data-run="blob">5. blob: URL (off-network)</button>
+      <button data-run="dedupe">6. same bytes twice (dedup)</button>
+      <button data-run="worker">7. inside a Worker (blind spot)</button>
+    </p>
+    <p><button data-run="all"><strong>Run all</strong></button></p>
+
+    <div id="log">ready.</div>
+
+    <script src="./testbed.js"></script>
+  </body>
+</html>
