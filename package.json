@@ -1,0 +1,25 @@
+{
+  "name": "wasm-sentry",
+  "version": "0.1.0",
+  "private": true,
+  "description": "An AI-powered auditor for WebAssembly binaries and JavaScript bundles",
+  "workspaces": [
+    "core",
+    "extension",
+    "backend"
+  ],
+  "scripts": {
+    "build": "npm run build -w @wasm-sentry/core && npm run build -w extension && npm run build -w backend",
+    "test": "npm run test -w @wasm-sentry/core && npm run test -w extension",
+    "lint": "npm run lint -w extension",
+    "typecheck": "tsc -b extension && tsc -p core/tsconfig.json --noEmit && tsc -p backend/tsconfig.json --noEmit"
+  },
+  "engines": {
+    "node": ">=20.19"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "tsx": "^4.20.6",
+    "typescript": "~6.0.2"
+  }
+}
