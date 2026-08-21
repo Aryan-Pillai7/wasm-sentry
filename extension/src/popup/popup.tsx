@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { AnalysisSummary, Finding, PageScorecard, RiskAssessment } from "@wasm-sentry/core";
 import type { TabReport, TabArtifactView } from "../shared/protocol";
+import { loadReport } from "./load-report";
 import "./popup.css";
 
 function formatBytes(size: number): string {
@@ -171,22 +172,27 @@ function ArtifactCard({ artifact }: { artifact: TabArtifactView }): React.JSX.El
 
 function Popup(): React.JSX.Element {
   const [report, setReport] = useState<TabReport | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<{ message: string; hint?: string } | null>(null);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
 
     async function load(): Promise<void> {
-      try {
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (!tab?.id) throw new Error("no active tab");
-        const next = (await chrome.runtime.sendMessage({
-          type: "wasm-sentry:tab-report",
-          tabId: tab.id,
-        })) as TabReport;
-        if (!cancelled) setReport(next);
-      } catch (cause) {
-        if (!cancelled) setError(String(cause));
+      const outcome = await loadReport({
+        queryActiveTab: async () =>
+          (await chrome.tabs.query({ active: true, currentWindow: true }))[0],
+        sendMessage: (message) => chrome.runtime.sendMessage(message),
+      });
+      if (cancelled) return;
+
+      if (outcome.status === "ok") {
+        setReport(outcome.report);
+        setFailure(null);
+      } else {
+        // Keep the last good report on screen if we have one: a single dropped
+        // poll should not blank out the findings the user is reading.
+        setFailure({ message: outcome.message, ...(outcome.hint ? { hint: outcome.hint } : {}) });
       }
     }
 
@@ -197,9 +203,23 @@ function Popup(): React.JSX.Element {
       cancelled = true;
       clearInterval(timer);
     };
-  }, []);
+  }, [attempt]);
 
-  if (error) return <div className="panel error">{error}</div>;
+  if (failure && !report) {
+    return (
+      <div className="panel">
+        <header>
+          <h1>Wasm-Sentry</h1>
+        </header>
+        <p className="error">{failure.message}</p>
+        {failure.hint && <p className="caveat">{failure.hint}</p>}
+        <p>
+          <button onClick={() => setAttempt((value) => value + 1)}>Retry</button>
+        </p>
+      </div>
+    );
+  }
+
   if (!report) return <div className="panel muted">Reading capture log…</div>;
 
   const notes = report.notes;
@@ -210,6 +230,8 @@ function Popup(): React.JSX.Element {
         <h1>Wasm-Sentry</h1>
         <span className="count">{report.artifacts.length} modules</span>
       </header>
+
+      {failure && <p className="caveat">Last refresh failed: {failure.message}</p>}
 
       <Scorecard card={report.scorecard} />
 

@@ -65,7 +65,16 @@ export interface TabReportRequest {
   tabId: number;
 }
 
-export type ExtensionMessage = CaptureRequest | SkipRequest | TabReportRequest;
+/** Liveness probe, so the popup can tell "asleep" from "broken". */
+export interface PingRequest {
+  type: "wasm-sentry:ping";
+}
+
+export type ExtensionMessage =
+  | CaptureRequest
+  | SkipRequest
+  | TabReportRequest
+  | PingRequest;
 
 export function isInjectorMessage(value: unknown): value is InjectorCaptureMessage {
   return (

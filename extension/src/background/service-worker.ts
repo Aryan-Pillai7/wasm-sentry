@@ -225,22 +225,37 @@ async function refreshBadge(tabId: number): Promise<void> {
 /* Wiring                                                              */
 /* ------------------------------------------------------------------ */
 
+// Registered first and unconditionally. Everything below it is optional
+// instrumentation, and a failure there must never cost us the ability to answer
+// the popup -- an extension whose UI cannot ask its worker anything is an
+// extension with no observable state at all.
 chrome.runtime.onMessage.addListener((raw, sender, sendResponse) => {
   const message = raw as ExtensionMessage;
   let work: Promise<unknown>;
 
-  switch (message?.type) {
-    case "wasm-sentry:capture":
-      work = handleCapture(message, sender);
-      break;
-    case "wasm-sentry:skipped":
-      work = handleSkip(message, sender);
-      break;
-    case "wasm-sentry:tab-report":
-      work = buildTabReport(message.tabId);
-      break;
-    default:
-      return false;
+  try {
+    switch (message?.type) {
+      case "wasm-sentry:ping":
+        sendResponse({ ok: true, at: Date.now() });
+        return false;
+      case "wasm-sentry:capture":
+        work = handleCapture(message, sender);
+        break;
+      case "wasm-sentry:skipped":
+        work = handleSkip(message, sender);
+        break;
+      case "wasm-sentry:tab-report":
+        work = buildTabReport(message.tabId);
+        break;
+      default:
+        return false;
+    }
+  } catch (error) {
+    // A synchronous throw here would otherwise leave the sender's promise
+    // unsettled forever, which is exactly the hang this guards against.
+    console.error(`${LOG} handler threw synchronously`, error);
+    sendResponse({ ok: false, reason: String(error) });
+    return false;
   }
 
   work.then(sendResponse, (error: unknown) => {
@@ -249,6 +264,8 @@ chrome.runtime.onMessage.addListener((raw, sender, sendResponse) => {
   });
   return true; // keeps the message channel open for the async reply
 });
+
+console.log(`${LOG} service worker ready`);
 
 /**
  * Network-side observation.
@@ -259,35 +276,41 @@ chrome.runtime.onMessage.addListener((raw, sender, sendResponse) => {
  * the Scorecard honest about its own blind spots instead of silently reporting
  * a clean page.
  */
-chrome.webRequest.onCompleted.addListener(
-  (details) => {
-    void (async () => {
-      const settings = await getSettings();
-      if (!settings.trackNetworkSightings) return;
+try {
+  chrome.webRequest.onCompleted.addListener(
+    (details) => {
+      void (async () => {
+        const settings = await getSettings();
+        if (!settings.trackNetworkSightings) return;
 
-      const header = details.responseHeaders?.find(
-        (h) => h.name.toLowerCase() === "content-type",
-      )?.value;
-      const declaredWasm = header?.toLowerCase().includes("wasm") ?? false;
-      const looksWasm = new URL(details.url).pathname.endsWith(".wasm");
-      if (!declaredWasm && !looksWasm) return;
+        const header = details.responseHeaders?.find(
+          (h) => h.name.toLowerCase() === "content-type",
+        )?.value;
+        const declaredWasm = header?.toLowerCase().includes("wasm") ?? false;
+        const looksWasm = new URL(details.url).pathname.endsWith(".wasm");
+        if (!declaredWasm && !looksWasm) return;
 
-      // The main-world hook records the same module within a few milliseconds
-      // when it can see it; this note is reconciled away by the popup, which
-      // hides notes whose URL already has a captured sighting.
-      await addNote({
-        url: details.url,
-        pageUrl: details.initiator ?? "",
-        tabId: details.tabId,
-        size: 0,
-        reason: "network-only",
-        timestamp: Date.now(),
-      });
-    })().catch(() => undefined);
-  },
-  { urls: ["<all_urls>"] },
-  ["responseHeaders"],
-);
+        // The main-world hook records the same module within a few milliseconds
+        // when it can see it; buildTabReport drops notes whose URL already has
+        // a captured sighting, so only genuine blind spots reach the popup.
+        await addNote({
+          url: details.url,
+          pageUrl: details.initiator ?? "",
+          tabId: details.tabId,
+          size: 0,
+          reason: "network-only",
+          timestamp: Date.now(),
+        });
+      })().catch(() => undefined);
+    },
+    { urls: ["<all_urls>"] },
+    ["responseHeaders"],
+  );
+} catch (error) {
+  // Observational webRequest is only used to notice modules the main-world hook
+  // could not see. Losing it costs coverage reporting, not capture.
+  console.warn(`${LOG} network observer unavailable`, error);
+}
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   void clearTab(tabId).catch(() => undefined);
