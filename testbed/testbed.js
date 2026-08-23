@@ -81,18 +81,50 @@ const RUNS = {
     say("6. same bytes compiled twice -- expect ONE module in the popup", "ok");
   },
 
-  // Content scripts do not run in workers, so this one is expected to show up
-  // as "not analysed", not as a captured module.
+  // Content scripts do not run in workers, so the hooks are carried in by a
+  // shim the extension starts the worker from. Expect a captured module tagged
+  // "in a Worker" -- not a "not analysed" note, which is what this produced
+  // before worker instrumentation landed.
   async worker() {
     const worker = new Worker("worker.js");
     worker.postMessage("go");
     await new Promise((resolve) => {
       worker.onmessage = (event) => {
-        say(`7. worker reported: ${event.data} -- expect a "not analysed" note`, "warn");
+        say(`7. worker reported: ${event.data} -- expect a module tagged "in a Worker"`, "ok");
         worker.terminate();
         resolve();
       };
       setTimeout(resolve, 2000);
+    });
+  },
+
+  // The same, as an ES module worker: its two loads are awaited, so the shim
+  // has to buffer this message until the real script has a handler for it.
+  async moduleWorker() {
+    const worker = new Worker("worker-module.js", { type: "module" });
+    worker.postMessage("go");
+    await new Promise((resolve) => {
+      worker.onmessage = (event) => {
+        say(`8. module worker reported: ${event.data}`, "ok");
+        worker.terminate();
+        resolve();
+      };
+      setTimeout(resolve, 2000);
+    });
+  },
+
+  // A worker that spawns a worker: captures have to bubble up one level at a
+  // time, and the page must not see any of them.
+  async nestedWorker() {
+    const worker = new Worker("worker-parent.js");
+    worker.postMessage("go");
+    await new Promise((resolve) => {
+      worker.onmessage = (event) => {
+        say(`9. nested worker reported: ${event.data}`, "ok");
+        worker.terminate();
+        resolve();
+      };
+      setTimeout(resolve, 3000);
     });
   },
 };

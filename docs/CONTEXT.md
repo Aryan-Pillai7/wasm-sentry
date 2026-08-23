@@ -21,8 +21,9 @@ Last updated after the dashboard landed.
 | — | Backend SQLite + job queue | not started (health endpoint only) |
 
 Beyond the three phases, the extension has since gained a dashboard, desktop
-notifications, generated icons, and a testbed page. 91 tests, all green: 41 in
-`core`, 50 in `extension`.
+notifications, generated icons, a testbed page, CI, and worker instrumentation
+that closed the last capture blind spot. 118 tests, all green: 41 in `core`,
+77 in `extension`.
 
 ```
 d83f408  Add a dashboard so the extension can show its own work
@@ -72,10 +73,11 @@ notification permission level, a live activity feed, and every module seen.
 npm run testbed      # emits fixtures, serves testbed/ on :8080
 ```
 
-Seven buttons, one per capture path — streaming, in-memory buffer, compile +
-instantiate, the `Module` constructor, a `blob:` URL, a dedup check, and a Web
-Worker (the known blind spot). Expect a red badge showing 4, one notification
-for `miner.wasm` at 63/100, and the feed filling in live.
+Nine buttons, one per capture path — streaming, in-memory buffer, compile +
+instantiate, the `Module` constructor, a `blob:` URL, a dedup check, a classic
+Worker, a module Worker, and a Worker inside a Worker. Expect a red badge, one
+notification for `miner.wasm` at 63/100, the feed filling in live, and the
+worker modules tagged **in a Worker** rather than listed as not analysed.
 
 ### Command line
 
@@ -126,6 +128,9 @@ extension/
   src/
     content/injector.ts       MAIN-world entry
     content/capture-hooks.ts  interception logic (globals injected -> testable)
+    content/worker-hooks.ts   Worker constructor wrapper, shim source, message intake
+    content/worker-prelude.ts what runs inside a worker; bundled to a string
+    content/worker-scope.ts   puts the worker's base URL back after the blob swap
     content/bridge.ts         ISOLATED-world relay, base64 encodes
     background/service-worker.ts  trust boundary, analysis, scorecard, badge
     background/alerts.ts      notification policy as a pure function
@@ -135,9 +140,10 @@ extension/
     shared/protocol.ts        message types + caps
     utils/db.ts               IndexedDB (schema v3)
     utils/settings.ts         local-first defaults
-  scripts/build-scripts.mjs   esbuild for the three script entries
+  scripts/build-scripts.mjs   esbuild; builds the prelude to a string first
   scripts/make-icons.mjs      renders + encodes the PNG icons
   test/pipeline.test.ts       end-to-end through the real service worker
+  test/worker-prelude.test.ts builds the prelude and runs it in a fake worker scope
 
 backend/                 health endpoint only, ESM + tsx
 testbed/                 local page exercising every capture path
@@ -183,8 +189,14 @@ docs/                    architecture, detection, api-spec, this file
 6. **Unpacked extensions get no permission prompt.** New manifest permissions
    apply silently on reload. Chrome's own OS-level notification permission is
    separate — the dashboard status panel reports it.
-7. **Web Workers are a capture blind spot** — content scripts do not run there.
-   Reported as `network-only` notes rather than hidden.
+7. **Workers are instrumented, and that is the one intrusive thing we do.**
+   Content scripts do not run in workers, so each worker is started from a
+   `blob:` shim that loads the hooks and then the real script. Three things to
+   know before touching it: the worker's base URL has to be restored
+   (`worker-scope.ts`), module workers need their startup messages buffered
+   because their loads are awaited, and the fallback path must never run after
+   the worker exists — that once produced two live workers. A CSP that forbids
+   `blob:` workers still leaves a `network-only` note, as before.
 8. **IndexedDB is at schema v3.** Upgrades drop all stores rather than migrating;
    the contents are a cache of things the browser can observe again. Bump
    `DB_VERSION` in `extension/src/utils/db.ts` when stores change.
@@ -239,8 +251,6 @@ Blocked on data, not code.
   `application/octet-stream`. Spec already written in `docs/api-spec.md`.
 - JS bundle analysis — needs its own consent design first; shipping page scripts
   anywhere is a bigger privacy question than Wasm modules.
-- Hook the `Worker` constructor to inject the capture script into workers,
-  closing gotcha 7.
 
 ---
 

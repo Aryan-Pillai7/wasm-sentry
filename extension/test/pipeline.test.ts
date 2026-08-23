@@ -133,6 +133,33 @@ test("the same module on the same page does not alert twice", async () => {
   assert.equal(notifications.length, before, "a reload must stay quiet");
 });
 
+test("a module compiled inside a worker is reported as one", async () => {
+  const bytes = readFileSync(minerPath);
+  const report = await send(
+    {
+      type: "wasm-sentry:capture",
+      api: "instantiateStreaming",
+      url: "https://miner.test/pool.wasm",
+      pageUrl: "https://miner.test/play",
+      size: bytes.length,
+      bytesB64: bytes.toString("base64"),
+      context: "worker",
+    },
+    { tab: { id: 42 }, frameId: 0 },
+  );
+  assert.equal(report.ok, true);
+
+  // Worker fan-out is how one page saturates every core, so "this came from a
+  // worker" is the part of the report that says the old blind spot is closed
+  // rather than merely quiet.
+  const tab = await send({ type: "wasm-sentry:tab-report", tabId: 42 });
+  const artifact = tab.artifacts.find((row: { hash: string }) => row.hash === report.hash);
+  assert.equal(artifact.context, "worker");
+
+  const activity = await send({ type: "wasm-sentry:activity" });
+  assert.equal(activity.events[0].context, "worker");
+});
+
 test("the badge is coloured by the verdict, not just counted", () => {
   const colours = badges.filter((badge) => badge.color).map((badge) => badge.color);
   assert.ok(colours.includes("#d1242f"), `expected the high-risk red, saw ${colours.join(",")}`);

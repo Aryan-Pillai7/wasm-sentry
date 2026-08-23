@@ -128,6 +128,7 @@ function Activity({ events, now }: { events: ActivityEvent[]; now: number }): Re
                 <td className="mono">{event.hash ? event.hash.slice(0, 10) : "—"}</td>
                 <td className="size">{event.size !== undefined ? formatBytes(event.size) : ""}</td>
                 <td className="detail">
+                  {event.context === "worker" && <span className="chip">worker</span>}
                   <LevelChip
                     {...(event.level !== undefined ? { level: event.level } : {})}
                     {...(event.score !== undefined ? { score: event.score } : {})}
@@ -233,6 +234,12 @@ const TOGGLES: Array<{ key: string; label: string; description: string }> = [
     key: "notifyOnHighRisk",
     label: "Notify on high-risk pages",
     description: "Raises a desktop notification for the high and critical bands only.",
+  },
+  {
+    key: "instrumentWorkers",
+    label: "Analyse WebAssembly inside Web Workers",
+    description:
+      "Carries the capture hooks into workers, which is where a miner would put its kernel. It is the only setting that changes how a page loads its own code, so turn it off if a site misbehaves; the change applies from the next page load.",
   },
   {
     key: "trackNetworkSightings",

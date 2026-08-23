@@ -7,33 +7,43 @@ document describes the target design and marks which parts exist today.
   page main world          extension                     optional backend
   ───────────────          ─────────                     ────────────────
   WebAssembly.*  ─┐
-   hook           ├─► bridge ─► service worker ─► IndexedDB
-  webRequest ─────┘                   │
-                                      ├─► analysis engine (@wasm-sentry/core)
-                                      │      parse → features → CFG
-                                      │      heuristics → risk score
-                                      │
-                                      ├─► popup (Privacy Scorecard)
-                                      │
-                                      └─► upload (opt-in) ─► SQLite + job queue
-                                                             ML classifier
+   hook           │
+  Worker shim ────┼─► bridge ─► service worker ─► IndexedDB
+   (same hooks)   │                  │
+  webRequest ─────┘                  │
+                                     ├─► analysis engine (@wasm-sentry/core)
+                                     │      parse → features → CFG
+                                     │      heuristics → risk score
+                                     │
+                                     ├─► popup (Privacy Scorecard)
+                                     │
+                                     └─► upload (opt-in) ─► SQLite + job queue
+                                                            ML classifier
 ```
 
 ## Layers
 
 ### 1. Capture — *complete*
 
-Two independent observers, because neither is sufficient alone.
+Three observers, because none is sufficient alone.
 
 **Main-world API hook** (`extension/src/content/`). A `"world": "MAIN"` content
 script at `document_start` wraps the five entry points a module can reach the
 engine through. It sees the exact bytes handed to the engine, including modules
-that never touch the network. It cannot see modules compiled inside a Web
-Worker, where content scripts do not run.
+that never touch the network.
+
+**Worker instrumentation** (`extension/src/content/worker-hooks.ts`). Content
+scripts do not run inside Web Workers, so the same hooks are carried in: the
+`Worker` constructor is wrapped, and each worker starts from a `blob:` shim
+that loads the hooks and then the script the page asked for. Captures travel
+back over `postMessage` on a private channel that is intercepted before any page
+listener can see it. A worker whose shim is refused -- a Content Security Policy
+that forbids `blob:` workers -- runs untouched and falls back to being reported
+as `network-only`.
 
 **Network observer** (service worker). A `webRequest.onCompleted` listener that
 records Wasm-typed responses as metadata only — it never re-fetches. Its job is
-to notice what the main-world hook missed, so the report can say "one module was
+to notice what the hooks missed, so the report can say "one module was
 not analysed" instead of quietly claiming a clean page.
 
 The two hops between contexts are described in

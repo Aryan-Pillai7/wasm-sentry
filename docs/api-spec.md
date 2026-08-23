@@ -21,10 +21,23 @@ isolated script  --chrome.runtime-------> service worker
   url: string,        // source URL, or "inline:<api>" for bytes with no URL
   pageUrl: string,
   size: number,
+  context?: "page" | "worker",   // absent means "page"
   bytes: Uint8Array,  // absent on a skip message
   skipped?: "too-large" | "rate-limited" | "read-failed",
 }
 ```
+
+A capture with `context: "worker"` was intercepted inside a Web Worker and
+forwarded to the main world over a third channel:
+
+```
+worker global scope --self.postMessage--> main world (worker hook)
+{ channel: "wasm-sentry:worker:v1", capture: { api, url, size, bytes } }
+```
+
+That hop is intercepted by a listener registered when the worker is constructed,
+before page code can attach one, and stopped there — the page never observes a
+message it did not send.
 
 This hop is observable and forgeable by the page — anything in the main world
 shares a global object with the hook. Nothing is leaked by the disclosure (the
@@ -40,8 +53,8 @@ predictable 4/3.
 
 | Message | Payload | Reply |
 |---|---|---|
-| `wasm-sentry:capture` | `{ api, url, pageUrl, size, bytesB64 }` | `{ ok, hash? , reason? }` |
-| `wasm-sentry:skipped` | `{ api, url, pageUrl, size, reason }` | `{ ok: true }` |
+| `wasm-sentry:capture` | `{ api, url, pageUrl, size, bytesB64, context? }` | `{ ok, hash? , reason? }` |
+| `wasm-sentry:skipped` | `{ api, url, pageUrl, size, reason, context? }` | `{ ok: true }` |
 | `wasm-sentry:tab-report` | `{ tabId }` | `TabReport` |
 
 `TabReport` carries one row per distinct artifact hash seen in the tab, plus the

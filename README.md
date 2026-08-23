@@ -62,6 +62,15 @@ and bytes pulled over XHR or a WebSocket and compiled from memory, which is a
 known cryptojacking pattern — and it cannot guarantee the bytes it analyses are
 the bytes that ran. Hooking the API gets the exact buffer the engine received.
 
+Content scripts do not run inside Web Workers, so the same hooks are carried in:
+each worker is started from a small shim that installs them and then loads the
+script the page asked for. Worker fan-out is how one page saturates every core,
+which makes a worker the natural place to hide a mining kernel. The swap is
+built to be invisible — the worker's base URL is restored, messages that arrive
+during startup are buffered, and our own traffic never reaches a page listener —
+and a worker whose shim is refused by Content Security Policy runs untouched and
+is reported as not analysed. Turn it off with the `instrumentWorkers` setting.
+
 Artifacts are identified by the SHA-256 of their contents, never by URL, so one
 module served under a thousand cache-busted URLs is analysed once.
 

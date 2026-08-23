@@ -30,3 +30,6 @@ docs/private/
 
 # generated test fixtures
 testbed/*.wasm
+
+# copied in by scripts/prepare-testbed.mjs so standalone.html can load it
+testbed/injector.js

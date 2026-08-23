@@ -18,26 +18,35 @@
  *   - Re-fetching doubles every module's bandwidth cost on the user's
  *     connection.
  *
- * Known blind spot: content scripts do not run inside Web Workers, so a module
- * compiled in a worker is not seen here. The service worker records those from
- * the network side as a `network-only` note so the report stays honest about
- * what it did not analyse.
+ * Content scripts still do not run inside Web Workers, so the same hooks are
+ * carried into workers by `worker-hooks.ts`, which starts each worker from a
+ * shim that loads them before the worker's own script. A worker we cannot
+ * instrument -- one blocked by Content Security Policy -- falls back to running
+ * untouched and is reported by the network observer as `network-only`, as
+ * before.
  */
 import { installHooks } from "./capture-hooks";
 import type { HookCapture, HookSkip, WasmNamespace } from "./capture-hooks";
+import { installWorkerHook } from "./worker-hooks";
+
+/** Bundled source of `worker-prelude.ts`, inlined at build time. */
+declare const __WASM_SENTRY_WORKER_PRELUDE__: string;
 
 const CHANNEL = "wasm-sentry:capture:v1";
 const MAX_ARTIFACT_BYTES = 16 * 1024 * 1024;
 const MAX_CAPTURES_PER_MINUTE = 60;
 const INSTALLED = "__wasmSentryInstalled";
 
-function emit(message: HookCapture | HookSkip): void {
+/** Where a capture was intercepted, so the report can say which. */
+type CaptureContext = "page" | "worker";
+
+function emit(message: HookCapture | HookSkip, context: CaptureContext = "page"): void {
   try {
     // Target origin `*` rather than `location.origin`: sandboxed and
     // `about:blank` frames have an opaque origin that would reject the message.
     // The delivery target is this same window either way, and the page already
     // owns every byte being forwarded, so this discloses nothing new.
-    window.postMessage({ channel: CHANNEL, pageUrl: location.href, ...message }, "*");
+    window.postMessage({ channel: CHANNEL, pageUrl: location.href, context, ...message }, "*");
   } catch {
     /* A page that has broken postMessage is not worth crashing over. */
   }
@@ -46,12 +55,45 @@ function emit(message: HookCapture | HookSkip): void {
 const guard = globalThis as unknown as { [INSTALLED]?: boolean };
 const wasm = (globalThis as { WebAssembly?: WasmNamespace }).WebAssembly;
 
-if (wasm && !guard[INSTALLED]) {
+if (!guard[INSTALLED]) {
   guard[INSTALLED] = true;
-  installHooks({
-    wasm,
-    emit,
-    maxBytes: MAX_ARTIFACT_BYTES,
-    maxPerMinute: MAX_CAPTURES_PER_MINUTE,
-  });
+
+  if (wasm) {
+    installHooks({
+      wasm,
+      emit,
+      maxBytes: MAX_ARTIFACT_BYTES,
+      maxPerMinute: MAX_CAPTURES_PER_MINUTE,
+    });
+  }
+
+  // Installed independently of the WebAssembly hooks: a page that deleted
+  // `WebAssembly` from its own world can still start a worker that uses it.
+  try {
+    const scope = globalThis as { Worker?: typeof Worker };
+    if (typeof scope.Worker === "function") {
+      const hook = installWorkerHook({
+        workerCtor: scope.Worker,
+        prelude: { source: __WASM_SENTRY_WORKER_PRELUDE__ },
+        pageUrl: location.href,
+        emit: (message) => emit(message, "worker"),
+        createObjectURL: (blob) => URL.createObjectURL(blob),
+        revokeObjectURL: (url) => URL.revokeObjectURL(url),
+      });
+      scope.Worker = hook.Worker;
+
+      // The setting lives in extension storage, which is async, while this hook
+      // has to exist before the page's first line runs. Instrumentation is
+      // therefore on by default and switched off a moment later if the user has
+      // turned it off, taking full effect from the next navigation.
+      window.addEventListener("message", (event: MessageEvent) => {
+        if (event.source !== window) return;
+        const data = event.data as { channel?: unknown; command?: unknown } | null;
+        if (data?.channel !== CHANNEL || data.command !== "disable-worker-instrumentation") return;
+        hook.disable();
+      });
+    }
+  } catch {
+    /* Losing worker coverage is a coverage loss, never a broken page. */
+  }
 }

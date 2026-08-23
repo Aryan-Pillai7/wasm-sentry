@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Wasm-Sentry capture harness</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body {
+        font: 14px/1.5 ui-sans-serif, system-ui, sans-serif;
+        max-width: 860px;
+        margin: 40px auto;
+        padding: 0 20px;
+      }
+      h1 { font-size: 20px; }
+      p.lede { color: #6b7280; }
+      button { font: inherit; padding: 6px 12px; }
+      #log {
+        margin-top: 20px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        white-space: pre-wrap;
+        border: 1px solid #8884;
+        border-radius: 8px;
+        padding: 12px;
+        min-height: 240px;
+      }
+      .pass { color: #2da44e; }
+      .fail { color: #d1242f; font-weight: 600; }
+      .note { color: #6b7280; }
+    </style>
+
+    <!--
+      The real main-world content script, loaded straight from the build.
+
+      `index.html` needs the extension installed and reloaded to test anything.
+      This page does not: `injector.js` is exactly what the extension injects at
+      `document_start`, and it reports captures by posting them to `window`, so
+      a plain script tag plus a message listener exercises the whole page-side
+      capture layer -- worker instrumentation included -- in a real browser.
+
+      What it cannot cover is everything past that first hop: the bridge, the
+      service worker, hashing, analysis and the UI. Use `index.html` with the
+      extension loaded for those.
+
+      Copied in by `scripts/prepare-testbed.mjs`; run `npm run testbed`.
+    -->
+    <script src="./injector.js"></script>
+  </head>
+  <body>
+    <h1>Wasm-Sentry capture harness</h1>
+    <p class="lede">
+      Runs every capture path against the built injector, with no extension
+      installed, and checks each one. Worker instrumentation is the part worth
+      watching: it is the only place the capture layer changes how a page loads
+      its own code.
+    </p>
+
+    <p><button id="run">Run the checks</button></p>
+    <div id="log">ready.</div>
+
+    <script>
+      const log = document.getElementById("log");
+      const say = (text, cls = "") => {
+        log.innerHTML += `\n<span class="${cls}">${text}</span>`;
+      };
+
+      const captures = [];
+      const leaks = [];
+
+      window.addEventListener("message", (event) => {
+        if (event.source !== window) return;
+        const data = event.data;
+        if (!data || typeof data !== "object") return;
+
+        if (data.channel === "wasm-sentry:capture:v1" && data.bytes) {
+          captures.push({ context: data.context, api: data.api, size: data.bytes.length, url: data.url });
+        }
+        // The worker channel must be intercepted and stopped before any page
+        // listener runs. One of these reaching here is a failure of the whole
+        // "never change what the page observes" rule, not a cosmetic issue.
+        if (data.channel === "wasm-sentry:worker:v1") leaks.push(data);
+      });
+
+      const IMPORTS = { env: { log: () => {} }, pool: { websocket_send: () => {} } };
+      const bytesOf = async (name) => (await fetch(name, { cache: "no-store" })).arrayBuffer();
+
+      /** Run a worker, resolve with its reply, and never hang the page on it. */
+      function talkTo(url, options, timeoutMs) {
+        return new Promise((resolve) => {
+          let worker;
+          try {
+            worker = options ? new Worker(url, options) : new Worker(url);
+          } catch (error) {
+            resolve(`could not start: ${error.message}`);
+            return;
+          }
+          const finish = (reply) => {
+            worker.terminate();
+            resolve(reply);
+          };
+          worker.onmessage = (event) => finish(event.data);
+          worker.onerror = (event) => finish(`worker error: ${event.message}`);
+          worker.postMessage("go");
+          setTimeout(() => finish("no reply within the timeout"), timeoutMs);
+        });
+      }
+
+      function check(label, condition, detail) {
+        say(`${condition ? "PASS" : "FAIL"}  ${label}${detail ? ` — ${detail}` : ""}`,
+            condition ? "pass" : "fail");
+        return condition;
+      }
+
+      async function run() {
+        log.textContent = "running…";
+        captures.length = 0;
+        leaks.length = 0;
+
+        if (typeof WebAssembly.compile !== "function") {
+          say("FAIL  injector.js did not load — run `npm run build`, then `npm run testbed`.", "fail");
+          return;
+        }
+
+        await WebAssembly.instantiate(await bytesOf("kernel-only.wasm"), IMPORTS);
+
+        const classic = await talkTo("worker.js", undefined, 3000);
+        say(`classic worker: ${classic}`, "note");
+
+        const module = await talkTo("worker-module.js", { type: "module" }, 3000);
+        say(`module worker: ${module}`, "note");
+
+        const nested = await talkTo("worker-parent.js", undefined, 4000);
+        say(`nested worker: ${nested}`, "note");
+
+        // Captures are deferred off the critical path, so give the last ones a
+        // moment to arrive before counting.
+        await new Promise((resolve) => setTimeout(resolve, 500));
+
+        const fromWorkers = captures.filter((capture) => capture.context === "worker");
+        say("");
+        check("the page's own module was captured",
+              captures.some((capture) => capture.context === "page"));
+        check("a classic worker's module was captured",
+              fromWorkers.length > 0, `${fromWorkers.length} worker capture(s)`);
+        check("the module worker replied, so its startup buffer worked",
+              typeof module === "string" && module.includes("module Worker"));
+        check("the nested worker replied, and its relative fetch resolved",
+              typeof nested === "string" && nested.includes("benign.wasm"));
+        check("no internal message reached a page listener", leaks.length === 0,
+              leaks.length ? `${leaks.length} leaked` : "");
+
+        say("");
+        say(`captures (${captures.length}):`, "note");
+        for (const capture of captures) {
+          say(`  ${capture.context}\t${capture.api}\t${capture.size} B\t${capture.url}`, "note");
+        }
+      }
+
+      const start = () => run().catch((error) => say(`FAIL  harness threw: ${error.message}`, "fail"));
+
+      document.getElementById("run").addEventListener("click", start);
+
+      // `?auto` runs on load, so the same page can be driven by a headless
+      // browser: `chrome --headless --virtual-time-budget=15000 --dump-dom
+      // "http://localhost:8080/standalone.html?auto"` prints the results.
+      if (location.search.includes("auto")) start();
+    </script>
+  </body>
+</html>

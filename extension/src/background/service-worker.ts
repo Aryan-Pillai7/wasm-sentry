@@ -97,6 +97,7 @@ async function handleCapture(
     now,
   );
 
+  const context = message.context ?? "page";
   const sighting: SightingRow = {
     hash,
     url: message.url,
@@ -105,6 +106,7 @@ async function handleCapture(
     frameId,
     source: "wasm-api",
     api: message.api,
+    context,
     timestamp: now,
   };
   await addSighting(sighting);
@@ -117,6 +119,7 @@ async function handleCapture(
     hash,
     size: bytes.length,
     api: message.api,
+    context,
     ...(isNew ? {} : { detail: "already seen" }),
   });
 
@@ -168,6 +171,7 @@ async function handleSkip(
     tabId: sender.tab?.id ?? -1,
     size: message.size,
     api: message.api,
+    context: message.context ?? "page",
     detail: message.reason,
   });
   await addNote({
@@ -212,6 +216,7 @@ async function buildTabReport(tabId: number): Promise<TabReport> {
       url: entry.sighting.url,
       ...(entry.sighting.api ? { api: entry.sighting.api } : {}),
       source: entry.sighting.source,
+      ...(entry.sighting.context ? { context: entry.sighting.context } : {}),
       firstSeen: row.firstSeen,
       lastSeen: row.lastSeen,
       sightings: entry.count,
@@ -311,6 +316,7 @@ async function buildActivityReport(): Promise<ActivityReport> {
     ...(row.level !== undefined ? { level: row.level } : {}),
     ...(row.score !== undefined ? { score: row.score } : {}),
     ...(row.detail !== undefined ? { detail: row.detail } : {}),
+    ...(row.context !== undefined ? { context: row.context } : {}),
   }));
 
   const lastCapture = eventRows.find((row) => row.kind === "captured");

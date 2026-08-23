@@ -112,5 +112,8 @@ sustained CPU is the signal that settles the question, and it arrives in Phase 4
   does not prove a detection rate.
 - **Static analysis only.** A module that fetches its kernel at runtime, or
   gates it behind a delay, looks benign here until runtime monitoring lands.
-- **Web Workers are a blind spot for capture**, so a module compiled inside one
-  is reported as `network-only` rather than analysed.
+- **A worker whose shim is refused stays a blind spot.** Modules compiled inside
+  a Web Worker are analysed now — the hooks are carried in by a shim the
+  extension starts the worker from — but a Content Security Policy that forbids
+  `blob:` workers rejects that shim, and those workers fall back to running
+  untouched and being reported as `network-only`.

@@ -12,7 +12,8 @@
  */
 import { bytesToBase64 } from "@wasm-sentry/core";
 import { CAPTURE_CHANNEL, MAX_ARTIFACT_BYTES } from "../shared/protocol";
-import type { CaptureRequest, SkipRequest } from "../shared/protocol";
+import type { CaptureContext, CaptureRequest, SkipRequest } from "../shared/protocol";
+import { getSettings } from "../utils/settings";
 import type { WasmApi } from "@wasm-sentry/core";
 
 const VALID_APIS: ReadonlySet<string> = new Set<WasmApi>([
@@ -24,6 +25,13 @@ const VALID_APIS: ReadonlySet<string> = new Set<WasmApi>([
 ]);
 
 const VALID_SKIP_REASONS: ReadonlySet<string> = new Set(["too-large", "rate-limited", "read-failed"]);
+
+const VALID_CONTEXTS: ReadonlySet<string> = new Set<CaptureContext>(["page", "worker"]);
+
+/** Read a capture's context, defaulting to the page for older senders. */
+function contextOf(value: unknown): CaptureContext {
+  return typeof value === "string" && VALID_CONTEXTS.has(value) ? (value as CaptureContext) : "page";
+}
 
 function send(message: CaptureRequest | SkipRequest): void {
   // Fire and forget. A closed service worker, a torn-down extension context or
@@ -55,6 +63,7 @@ window.addEventListener("message", (event: MessageEvent) => {
       pageUrl,
       size: typeof data["size"] === "number" ? data["size"] : 0,
       reason: skipped as SkipRequest["reason"],
+      context: contextOf(data["context"]),
     });
     return;
   }
@@ -70,5 +79,26 @@ window.addEventListener("message", (event: MessageEvent) => {
     pageUrl,
     size: bytes.length,
     bytesB64: bytesToBase64(bytes),
+    context: contextOf(data["context"]),
   });
 });
+
+/**
+ * Relay the worker-instrumentation setting into the main world.
+ *
+ * The main-world hook has to exist before the page's first line runs, and
+ * `chrome.storage` is async, so it cannot be consulted first. Instrumentation
+ * is on by default and switched off here a few milliseconds later when the user
+ * has disabled it -- see `installWorkerHook`'s `disable()`. A worker started
+ * inside that window is still instrumented; the setting takes full effect from
+ * the next navigation.
+ */
+void getSettings()
+  .then((settings) => {
+    if (settings.instrumentWorkers) return;
+    window.postMessage(
+      { channel: CAPTURE_CHANNEL, command: "disable-worker-instrumentation" },
+      "*",
+    );
+  })
+  .catch(() => undefined);

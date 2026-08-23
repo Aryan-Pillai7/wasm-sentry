@@ -23,6 +23,7 @@ import type {
   RiskLevel,
   WasmApi,
 } from "@wasm-sentry/core";
+import type { CaptureContext } from "../shared/protocol";
 
 const DB_NAME = "wasm-sentry";
 const DB_VERSION = 3;
@@ -54,6 +55,13 @@ export interface SightingRow {
   frameId: number;
   source: CaptureSource;
   api?: WasmApi;
+  /**
+   * Page world or inside a Web Worker. Optional rather than required: rows
+   * written before worker instrumentation existed have no value for it, and an
+   * IndexedDB store holds whatever shape it was written with. Absent reads as
+   * "page", which is what those rows were.
+   */
+  context?: CaptureContext;
   timestamp: number;
 }
 
@@ -90,6 +98,7 @@ export interface EventRow {
   level?: RiskLevel;
   score?: number;
   detail?: string;
+  context?: CaptureContext;
 }
 
 let dbPromise: Promise<IDBDatabase> | null = null;

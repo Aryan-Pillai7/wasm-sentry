@@ -22,6 +22,15 @@ import type {
  */
 export const CAPTURE_CHANNEL = "wasm-sentry:capture:v1";
 
+/**
+ * Where a capture was intercepted.
+ *
+ * Worth carrying all the way to the popup: "compiled inside a Web Worker" was
+ * a blind spot until the worker hook landed, and a report that cannot say which
+ * modules came from workers cannot show that the blind spot is closed.
+ */
+export type CaptureContext = "page" | "worker";
+
 /** Hard ceiling on a single captured artifact, before base64 expansion. */
 export const MAX_ARTIFACT_BYTES = 16 * 1024 * 1024;
 
@@ -37,6 +46,7 @@ export interface InjectorCaptureMessage {
   pageUrl: string;
   size: number;
   bytes: Uint8Array;
+  context?: CaptureContext;
 }
 
 /** Sent from the isolated content script to the service worker. */
@@ -48,6 +58,7 @@ export interface CaptureRequest {
   size: number;
   /** Artifact bytes, base64 encoded -- see `@wasm-sentry/core` base64 notes. */
   bytesB64: string;
+  context?: CaptureContext;
 }
 
 /** Reported when an artifact was seen but deliberately not captured. */
@@ -58,6 +69,7 @@ export interface SkipRequest {
   pageUrl: string;
   size: number;
   reason: "too-large" | "rate-limited" | "read-failed";
+  context?: CaptureContext;
 }
 
 /** Popup asking the service worker what it has seen in a given tab. */
@@ -114,6 +126,8 @@ export interface TabArtifactView {
   /** How it reached us the last time we saw it in this tab. */
   api?: WasmApi;
   source: CaptureSource;
+  /** Whether the last sighting was in the page or inside a Web Worker. */
+  context?: CaptureContext;
   firstSeen: number;
   lastSeen: number;
   /** Times seen in this tab (not globally). */
@@ -143,6 +157,7 @@ export interface ActivityEvent {
   level?: RiskLevel;
   score?: number;
   detail?: string;
+  context?: CaptureContext;
 }
 
 /** A module in the all-sites listing. */

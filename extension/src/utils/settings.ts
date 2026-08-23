@@ -20,6 +20,16 @@ export interface Settings {
    * The badge is always updated regardless; this is the interrupting channel.
    */
   notifyOnHighRisk: boolean;
+  /**
+   * Carry the capture hooks into Web Workers.
+   *
+   * On by default, because worker fan-out is how one page saturates every core
+   * and an uninstrumented worker is the blind spot a miner would choose. It is
+   * also the only part of the extension that changes how a page loads its own
+   * code -- workers start from a shim that loads their real script -- so it has
+   * an off switch that the rest of the capture layer does not need.
+   */
+  instrumentWorkers: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -27,6 +37,7 @@ export const DEFAULT_SETTINGS: Settings = {
   backendUrl: "http://localhost:3000",
   trackNetworkSightings: true,
   notifyOnHighRisk: true,
+  instrumentWorkers: true,
 };
 
 const KEY = "settings";

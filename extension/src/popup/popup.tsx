@@ -146,6 +146,7 @@ function ArtifactCard({ artifact }: { artifact: TabArtifactView }): React.JSX.El
       <div className="artifact-meta">
         <span className="tag">{artifact.kind}</span>
         {artifact.api ? <span className="tag">{artifact.api}</span> : null}
+        {artifact.context === "worker" ? <span className="tag">in a Worker</span> : null}
         {artifact.sightings > 1 ? <span className="tag">x{artifact.sightings}</span> : null}
         {analysis?.risk && (
           <span className={`verdict level-${analysis.risk.level}`}>{analysis.risk.score}</span>

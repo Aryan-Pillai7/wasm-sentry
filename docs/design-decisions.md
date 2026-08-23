@@ -71,7 +71,8 @@ five entry points through which a module can reach the engine:
 engine receives.
 
 **Cost.** Requires Chrome 111+. Content scripts do not run inside Web Workers,
-so a module compiled in a worker is a blind spot — handled in §2.6.
+so a module compiled in a worker is not seen by this hook — reported honestly in
+§2.6, and reached in §2.6a.
 
 ### 2.2 Never change what the page observes
 
@@ -123,6 +124,68 @@ analysed"*.
 **Why this matters:** the alternative is silently reporting a clean page. A
 security tool that under-reports its own coverage is worse than one that reports
 nothing.
+
+### 2.6a Carrying the hooks into Web Workers
+
+§2.6 above describes the blind spot as a reporting problem: content scripts do
+not run in workers, so a module compiled in one was recorded as `network-only`
+rather than analysed. That was the honest interim answer. It is not a good
+permanent one, because **worker fan-out is how one page saturates every core** --
+the modules most worth analysing are exactly the ones a worker would hold.
+
+**Decision.** Wrap the `Worker` constructor in the main world and start each
+worker from a `blob:` shim that loads the capture hooks first and the script the
+page asked for second.
+
+**Why a shim and not something less invasive.** There is nothing less invasive.
+`chrome.scripting` cannot target workers, worker scripts must be same-origin so
+a redirect to an extension-hosted script is refused, and re-fetching the module
+URL from the service worker is the design this project rejected in §2.1 for
+reasons that have not changed.
+
+**This is the one place the capture layer changes how a page loads its own
+code**, so the cost is worth stating precisely rather than glossing:
+
+1. **The worker's base URL moves to the blob.** Every relative URL the real
+   script resolves would silently point somewhere else, which is exactly the
+   observable change §2.2 forbids. `worker-scope.ts` puts it back: `location` is
+   redefined, and `importScripts`, `fetch`, `Request`, `XMLHttpRequest.open`,
+   `WebSocket`, `EventSource`, `Worker` and `sendBeacon` all resolve their
+   argument against the real script's URL first. Module workers need less of
+   this than classic ones — the real module is imported by URL, so its
+   `import.meta.url` and every dynamic `import()` inside it are already right.
+
+2. **Module workers cannot load synchronously.** `importScripts` does not exist
+   there, so the shim awaits two dynamic imports, and a `postMessage` arriving
+   in that window would find no handler registered and be dropped. The shim
+   buffers messages during startup and re-dispatches them in order. Classic
+   workers need none of this: `importScripts` is synchronous, so the real script
+   has run before the constructor's caller gets its worker back.
+
+3. **Our own messages must never reach the page.** Captures come back over
+   `postMessage` with a channel marker, and the interception listener is
+   attached at construction — before page code can hold the worker, let alone
+   add a handler — so `stopImmediatePropagation()` there means no page listener
+   ever runs for one of our events.
+
+4. **Content Security Policy can refuse a `blob:` worker.** Then the shim throws
+   at construction and the untouched worker is started instead. A page whose
+   worker does not start is a far worse outcome than a module not analysed.
+
+**The failure that shaped the code.** The first version wrapped the whole
+construct trap in one try/catch. Constructing a worker is not a pure act — it
+fetches and runs a script — so a failure *after* the worker existed was
+answered by constructing a second one, and the page's code ran twice. The
+fallback is now scoped to the steps that happen before the worker exists;
+anything failing after it is swallowed and costs only our own listener. A test
+pins it.
+
+**Why it has an off switch when nothing else does.** Every other part of capture
+is unobservable by construction. This one is not, so `instrumentWorkers` exists.
+It cannot be consulted before the hook installs — `chrome.storage` is async and
+the hook must exist before the page's first line — so instrumentation is on by
+default and switched off a few milliseconds later by the bridge, taking full
+effect from the next navigation.
 
 ### 2.7 Format detection by magic bytes, never by URL or MIME type
 
@@ -413,14 +476,29 @@ interception logic is tested directly against a synthetic WebAssembly namespace
 — no browser, no DOM shim. Capture correctness is the foundation everything else
 stands on: a module never seen is a module never ruled on.
 
-### 6.4 Counts
+### 6.4 The worker prelude is tested as a built artifact
 
-91 tests. 41 in `core` (sniffing, hashing, base64, parser, decoder, CFG,
-features, heuristics, scoring) and 50 in `extension` (capture hooks, storage
-against a real IndexedDB, popup message handling, alert policy, formatting, and
-an end-to-end run through the real service worker).
+Everything else is unit tested against injected fakes, which proves the logic
+and says nothing about the bundle. The worker prelude never runs as an extension
+script at all: it is bundled to a string, published as a `blob:` URL, and
+evaluated inside a worker no test can reach. A broken bundle — a stray reference
+to `window`, an import that did not get inlined — would leave every unit test
+green while no module in any worker was ever captured again.
 
-### 6.5 No detection rate is claimed
+So one test builds it exactly as the build script does and evaluates it in a
+`vm` context shaped like a worker global scope, then asserts that a compile
+inside it emits a capture, that the base URL was restored, and that a nested
+worker is instrumented from the same prelude blob.
+
+### 6.5 Counts
+
+118 tests. 41 in `core` (sniffing, hashing, base64, parser, decoder, CFG,
+features, heuristics, scoring) and 77 in `extension` (capture hooks, worker
+instrumentation and base compensation, the built worker prelude, storage against
+a real IndexedDB, popup message handling, alert policy, formatting, and an
+end-to-end run through the real service worker).
+
+### 6.6 No detection rate is claimed
 
 Deliberately. An honest figure needs a labelled corpus (WasmBench plus verified
 malicious samples) that this project does not yet have. The synthetic fixture
@@ -449,8 +527,8 @@ criticises.
 - **643 KB / 1,879 functions parsed in 165 ms**; 2.4 MB / 975k instructions in 399 ms
 - **0 warnings, 0 undecodable function bodies** on both real-world modules
 - **~38 KB** added to the extension bundle by the whole analysis engine
-- **91 tests**, all green — 41 in `core`, 50 in `extension`
+- **118 tests**, all green — 41 in `core`, 77 in `extension`
 - **12 detection rules**, every one citing evidence, 5 citing literature
 - Calibration: benign real-world modules score **6** and **21** out of 100; the
   full mining shape scores **63**
-- **No detection rate is claimed**, here or anywhere in the repository — see §6.5
+- **No detection rate is claimed**, here or anywhere in the repository — see §6.6
