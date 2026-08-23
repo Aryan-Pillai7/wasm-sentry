@@ -47,6 +47,12 @@ npm run build        # core -> extension -> backend
 npm test             # core + extension
 ```
 
+CI runs `npm ci`, build, typecheck, lint, fixtures and tests on Node 22.12 and
+24 for every push and pull request (`.github/workflows/ci.yml`). The fixture
+step is load-bearing: `extension/test/pipeline.test.ts` skips itself when
+`testbed/miner.wasm` is absent, so without it the end-to-end test would report
+green while covering nothing.
+
 Load the extension: `chrome://extensions` → Developer mode → **Load unpacked** →
 select `extension/dist`. **Chrome 111+ required** (`"world": "MAIN"` content
 scripts). Pin it to the toolbar, or the badge is hidden in the puzzle menu.
@@ -235,7 +241,6 @@ Blocked on data, not code.
   anywhere is a bigger privacy question than Wasm modules.
 - Hook the `Worker` constructor to inject the capture script into workers,
   closing gotcha 7.
-- CI: GitHub Actions running `npm ci && npm run build && npm test`.
 
 ---
 

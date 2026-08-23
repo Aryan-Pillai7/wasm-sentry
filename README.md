@@ -1,5 +1,7 @@
 # Wasm-Sentry
 
+[![CI](https://github.com/abhay-codes07/wasm-sentry/actions/workflows/ci.yml/badge.svg)](https://github.com/abhay-codes07/wasm-sentry/actions/workflows/ci.yml)
+
 An in-browser auditor for WebAssembly modules and JavaScript bundles.
 
 Wasm-Sentry watches the code a page actually executes — including modules that
