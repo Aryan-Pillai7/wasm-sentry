@@ -291,7 +291,11 @@ function Settings({
 function Dashboard(): React.JSX.Element {
   const [report, setReport] = useState<ActivityReport | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [now, setNow] = useState(Date.now());
+  // Every relative time on the page is rendered against this one clock reading,
+  // taken when the report arrived, so a row cannot say "2s ago" while the row
+  // under it says "3s ago" for the same instant. Zero until the first report
+  // lands, which is also the point at which anything using it starts rendering.
+  const [now, setNow] = useState(0);
 
   const load = useCallback(async () => {
     try {
@@ -310,10 +314,25 @@ function Dashboard(): React.JSX.Element {
     }
   }, []);
 
+  // Chained timeouts rather than setInterval: the next poll is scheduled only
+  // once the previous one has answered, so a slow or sleeping service worker
+  // cannot accumulate a backlog of overlapping requests that all resolve at
+  // once and fight over the same state.
   useEffect(() => {
-    void load();
-    const timer = setInterval(() => void load(), POLL_MS);
-    return () => clearInterval(timer);
+    let live = true;
+    let timer = 0;
+
+    const tick = async (): Promise<void> => {
+      if (!live) return;
+      await load();
+      if (live) timer = self.setTimeout(() => void tick(), POLL_MS);
+    };
+
+    timer = self.setTimeout(() => void tick(), 0);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
   }, [load]);
 
   const update = useCallback(
