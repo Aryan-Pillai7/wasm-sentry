@@ -17,7 +17,7 @@
     "fixtures": "tsx core/scripts/emit-fixtures.ts testbed"
   },
   "engines": {
-    "node": ">=20.19"
+    "node": ">=22.12"
   },
   "devDependencies": {
     "esbuild": "^0.25.0",
