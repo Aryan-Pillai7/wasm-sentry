@@ -4,7 +4,8 @@ Read this first if you are picking the project up on a different machine or
 after a break. It is the handover note: current state, how to run things,
 conventions in force, the gotchas that waste time, and what to do next.
 
-Last updated after the dashboard landed.
+Last updated after JavaScript analysis landed, which finished the roadmap. The
+only outstanding item is the labelled corpus described under "Next steps".
 
 ---
 
@@ -22,18 +23,30 @@ Last updated after the dashboard landed.
 
 Beyond the phases, the extension has gained a dashboard, desktop notifications,
 generated icons, a testbed page, CI, and worker instrumentation that closed the
-last capture blind spot. 233 tests, all green: 99 in `core`, 121 in `extension`, 13 in `backend`.
+last capture blind spot. 234 tests, all green: 100 in `core`, 121 in `extension`, 13 in `backend`.
 
 ```
+JavaScript and supply-chain analysis, behind the consent design that blocked it
+Phase 5: the classifier pipeline, and no model to ship with it
+Backend Phase 2: SQLite, a job queue, and the upload API
+Phase 4: measure what a module does, not only what it is
+Fix the nested-worker capture race the browser found, and document it
+Carry the capture hooks into Web Workers
+Run build, typecheck, lint and tests in CI
+Make `npm run lint` pass, and stop dashboard polls overlapping
+Regenerate the lockfile so a checkout installs on any platform
+--- everything above landed after the handover ---
 d83f408  Add a dashboard so the extension can show its own work
 61ef96f  Notify on high-risk pages, and give the extension a real icon
-f805222  Fix the popup hanging on "Reading capture log" and make failures diagnosable
+f805222  Fix the popup hanging on "Reading capture log"
 71f0dfc  Add an end-to-end testbed exercising every capture path
-4c18abf  Remove stray file and replace the Vite template extension README
 3b337b3  Phase 3: heuristic detection and the Privacy Scorecard
 0f562de  Phase 2: static analysis pipeline -- parser, CFG, WAT and features
 d42780a  Phase 1: rebuild the capture layer around main-world API hooks
 ```
+
+Hashes are omitted above the line because they change with a rebase; `git log`
+has them, and the subjects are what you are looking for anyway.
 
 Commit messages are deliberately detailed. `git log` is the design record.
 

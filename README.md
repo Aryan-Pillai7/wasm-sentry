@@ -21,9 +21,10 @@ engine that runs unchanged in the browser, in Node, and in tests.
 
 | Path | What it is |
 |---|---|
-| `core/` | `@wasm-sentry/core` — format sniffing, hashing, the Wasm parser, CFG builder, WAT renderer and feature extractor. Zero runtime dependencies. |
-| `extension/` | Chrome MV3 extension: main-world capture hook, service worker, popup. |
-| `backend/` | Optional Node service for opt-in deep analysis. |
+| `core/` | `@wasm-sentry/core` — format sniffing, hashing, the Wasm parser, CFG builder, WAT renderer, feature extraction, the detection rules, the JavaScript scanner and the classifier pipeline. Zero runtime dependencies. |
+| `extension/` | Chrome MV3 extension: main-world capture hooks, worker instrumentation, runtime monitoring, script observation, service worker, popup and dashboard. |
+| `backend/` | Optional Node service: SQLite store, job queue and the opt-in upload API. |
+| `testbed/` | A local page exercising every capture path, plus a harness that checks them against the built injector with no extension installed. |
 | `docs/` | [Architecture](docs/architecture.md), [design decisions](docs/design-decisions.md), [detection rules](docs/detection.md), [API spec](docs/api-spec.md) and a handover [context note](docs/CONTEXT.md). |
 
 The three packages are npm workspaces, so a single `npm install` at the root
@@ -34,7 +35,7 @@ wires them together and `@wasm-sentry/core` resolves by name from both consumers
 ```bash
 npm install
 npm run build      # core -> extension -> backend
-npm test           # core + extension unit tests
+npm test           # core + extension + backend
 ```
 
 Then load the extension:

@@ -641,7 +641,7 @@ worker is instrumented from the same prelude blob.
 
 ### 6.5 Counts
 
-233 tests. 99 in `core` (sniffing, hashing, base64, parser, decoder, CFG,
+234 tests. 100 in `core` (sniffing, hashing, base64, parser, decoder, CFG,
 features, heuristics, scoring, runtime accumulation and rules, the JavaScript
 scanner calibrated against real bundles, the feature vectoriser, the trainer,
 inference and the evaluation harness), 121 in
@@ -848,9 +848,11 @@ character. A test pins a 5 MB literal.
 - **0 runtime dependencies** in the analysis core
 - **643 KB / 1,879 functions parsed in 165 ms**; 2.4 MB / 975k instructions in 399 ms
 - **0 warnings, 0 undecodable function bodies** on both real-world modules
-- **~38 KB** added to the extension bundle by the whole analysis engine
-- **233 tests**, all green — 99 in `core`, 121 in `extension`, 13 in `backend`
-- **12 detection rules**, every one citing evidence, 5 citing literature
+- **58 KB** service worker and **19 KB** page hook, minified — the whole
+  analysis engine, the rules and the runtime monitor included
+- **234 tests**, all green — 100 in `core`, 121 in `extension`, 13 in `backend`
+- **25 detection rules** — 12 static, 5 runtime, 7 JavaScript and supply-chain,
+  1 classifier — every one citing evidence, 12 citing literature
 - Calibration: benign real-world modules score **6** and **21** out of 100; the
   full mining shape scores **63**
 - **No detection rate is claimed**, here or anywhere in the repository — see §6.6
