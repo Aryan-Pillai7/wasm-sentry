@@ -96,8 +96,15 @@
             return;
           }
           const finish = (reply) => {
-            worker.terminate();
-            resolve(reply);
+            // A streaming capture is posted once the cloned response has been
+            // read, which can land after the module finished instantiating --
+            // so terminating the instant a worker replies can kill a capture
+            // that was already on its way. The extension degrades that to a
+            // "not analysed" note; this page is checking capture, so it waits.
+            setTimeout(() => {
+              worker.terminate();
+              resolve(reply);
+            }, 150);
           };
           worker.onmessage = (event) => finish(event.data);
           worker.onerror = (event) => finish(`worker error: ${event.message}`);
@@ -147,6 +154,10 @@
               typeof module === "string" && module.includes("module Worker"));
         check("the nested worker replied, and its relative fetch resolved",
               typeof nested === "string" && nested.includes("benign.wasm"));
+        check("captures bubbled up from a worker inside a worker",
+              fromWorkers.some((capture) => capture.url.endsWith("benign.wasm")) &&
+                fromWorkers.filter((capture) => capture.url.endsWith("kernel-only.wasm")).length >= 3,
+              `${fromWorkers.length} worker capture(s)`);
         check("no internal message reached a page listener", leaks.length === 0,
               leaks.length ? `${leaks.length} leaked` : "");
 

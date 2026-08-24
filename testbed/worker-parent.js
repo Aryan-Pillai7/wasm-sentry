@@ -15,6 +15,17 @@ self.onmessage = async () => {
       child.postMessage("go");
       setTimeout(() => resolve("child never answered"), 2000);
     });
+
+    // Not terminated the instant the child replies, deliberately.
+    //
+    // A streaming capture is posted once the cloned response has been read,
+    // which can land after the module has finished instantiating -- so the
+    // child's reply and its capture are racing, and `terminate()` kills
+    // whichever messages are still in flight. Waiting a beat makes this fixture
+    // demonstrate capture rather than demonstrate that race. The race itself is
+    // real and documented: a worker killed mid-capture degrades to the
+    // network observer's "not analysed" note.
+    await new Promise((resolve) => setTimeout(resolve, 150));
     child.terminate();
 
     const response = await fetch("benign.wasm");

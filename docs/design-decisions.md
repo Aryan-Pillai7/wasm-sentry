@@ -180,6 +180,15 @@ fallback is now scoped to the steps that happen before the worker exists;
 anything failing after it is swallowed and costs only our own listener. A test
 pins it.
 
+**What only a real browser found.** The unit tests and the sandboxed prelude
+test both pass against a nested worker; a run in headless Chrome showed its
+capture never arriving. The cause was not in our code: a streaming capture is
+posted once the cloned response has been read, which can land after
+instantiation finishes, so the worker's reply and its capture race — and the
+consumer calling `terminate()` on the reply kills whichever is still in flight.
+It degrades to the network observer's "not analysed" note rather than
+disappearing, which is the behaviour §2.6 exists to guarantee.
+
 **Why it has an off switch when nothing else does.** Every other part of capture
 is unobservable by construction. This one is not, so `instrumentWorkers` exists.
 It cannot be consulted before the hook installs — `chrome.storage` is async and

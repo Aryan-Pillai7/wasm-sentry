@@ -79,6 +79,32 @@ Worker, a module Worker, and a Worker inside a Worker. Expect a red badge, one
 notification for `miner.wasm` at 63/100, the feed filling in live, and the
 worker modules tagged **in a Worker** rather than listed as not analysed.
 
+### Checking capture in a real browser, without installing anything
+
+```bash
+npm run build && npm run testbed        # then open /standalone.html
+```
+
+`standalone.html` loads the built `extension/dist/injector.js` with a plain
+script tag — exactly what the extension injects at `document_start` — and checks
+every capture path itself. It covers only the first hop, but that is the hop
+worker instrumentation lives in.
+
+It can be driven headlessly, which is how the nested-worker race in gotcha 8 was
+found. **Do not use `--virtual-time-budget`**: virtual time does not advance
+inside worker threads, so the page's timeouts fire instantly while the workers
+never get real time to load, and every worker check fails for a reason that does
+not exist. Drive it over CDP and wait on wall-clock time instead:
+
+```bash
+chrome --headless=new --remote-debugging-port=9222 --user-data-dir=/tmp/p about:blank
+# then navigate to http://localhost:8080/standalone?auto, wait ~15s,
+# and read document.getElementById("log").innerText
+```
+
+Expect five captures: one `page`, and four `worker` — a classic worker, a module
+worker, a worker nested inside one, and that nested worker's own parent.
+
 ### Command line
 
 ```bash
@@ -197,7 +223,13 @@ docs/                    architecture, detection, api-spec, this file
    because their loads are awaited, and the fallback path must never run after
    the worker exists — that once produced two live workers. A CSP that forbids
    `blob:` workers still leaves a `network-only` note, as before.
-8. **IndexedDB is at schema v3.** Upgrades drop all stores rather than migrating;
+8. **A worker terminated the instant it replies can lose its capture.** The
+   streaming capture is posted after the cloned response has been read, which
+   can land after instantiation finishes, so the reply and the capture race.
+   Found in the real browser, not in a unit test — the testbed fixtures wait a
+   beat before `terminate()` so they demonstrate capture rather than the race.
+   Nothing is silently lost: the network observer still notes the module.
+9. **IndexedDB is at schema v3.** Upgrades drop all stores rather than migrating;
    the contents are a cache of things the browser can observe again. Bump
    `DB_VERSION` in `extension/src/utils/db.ts` when stores change.
 

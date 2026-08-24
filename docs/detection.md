@@ -112,6 +112,13 @@ sustained CPU is the signal that settles the question, and it arrives in Phase 4
   does not prove a detection rate.
 - **Static analysis only.** A module that fetches its kernel at runtime, or
   gates it behind a delay, looks benign here until runtime monitoring lands.
+- **A worker terminated mid-capture loses that capture.** A streaming capture is
+  posted once the cloned response has been read, which can land after the module
+  has finished instantiating — so a page that calls `terminate()` the instant its
+  worker reports back can kill a capture already in flight. It degrades rather
+  than disappears: the network observer still records the module as
+  `network-only`, so the report says "not analysed" instead of implying a clean
+  page.
 - **A worker whose shim is refused stays a blind spot.** Modules compiled inside
   a Web Worker are analysed now — the hooks are carried in by a shim the
   extension starts the worker from — but a Content Security Policy that forbids
