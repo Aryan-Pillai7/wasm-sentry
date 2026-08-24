@@ -48,6 +48,7 @@ import {
 import type { RuntimeRow, SightingRow } from "../utils/db";
 import { getSettings, setSettings } from "../utils/settings";
 import { decideAlert } from "./alerts";
+import { uploadArtifact } from "./upload";
 import { MAX_ARTIFACT_BYTES } from "../shared/protocol";
 import type {
   ActivityEvent,
@@ -169,9 +170,49 @@ async function handleCapture(
     });
   }
 
+  // Deliberately after the local analysis and not awaited by it: uploading is
+  // opt-in, optional and remote, and none of those may delay the verdict the
+  // user is about to look at.
+  if (isNew) void maybeUpload(hash, bytes, message.pageUrl, tabId);
+
   const report = await refreshBadge(tabId);
   if (report) await maybeAlert(tabId, report).catch(() => undefined);
   return { ok: true, hash };
+}
+
+/** Send an artifact to the backend when the user has turned uploading on. */
+async function maybeUpload(
+  hash: string,
+  bytes: Uint8Array,
+  pageUrl: string,
+  tabId: number,
+): Promise<void> {
+  try {
+    const settings = await getSettings();
+    if (!settings.uploadEnabled) return;
+
+    const outcome = await uploadArtifact({ settings, hash, bytes });
+    if (outcome.status === "skipped") return;
+
+    // Recorded either way. A user who turned uploading on is entitled to see
+    // whether it is actually working, and a silent failure would leave them
+    // believing modules were being sent when nothing was.
+    await addEvent({
+      timestamp: Date.now(),
+      kind: outcome.status === "failed" ? "skipped" : "captured",
+      pageUrl,
+      tabId,
+      hash,
+      detail:
+        outcome.status === "uploaded"
+          ? `uploaded to the backend as ${outcome.jobId}`
+          : outcome.status === "known"
+            ? "the backend already had this module"
+            : `upload failed: ${outcome.reason}`,
+    });
+  } catch (error) {
+    console.warn(`${LOG} upload failed`, error);
+  }
 }
 
 async function handleSkip(

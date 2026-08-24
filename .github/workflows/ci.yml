@@ -23,9 +23,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Node 20 reached end of life in April 2026. 22 is the floor the
-        # packages declare; 24 is what development runs on.
-        node: ['22.12', '24']
+        # Node 20 reached end of life in April 2026. 22.13 is the floor the
+        # backend declares -- it is where `node:sqlite` stopped needing a flag --
+        # and 24 is what development runs on.
+        node: ['22.13', '24']
 
     steps:
       - uses: actions/checkout@v4

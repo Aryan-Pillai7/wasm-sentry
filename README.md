@@ -50,6 +50,13 @@ The backend is optional and off by default:
 npm run dev -w backend    # http://localhost:3000/health
 ```
 
+It stores artifacts in SQLite, queues them, and analyses them with the same
+engine the extension runs — so a verdict computed there is the verdict the
+browser would have reached. Nothing reaches it unless you turn on
+`uploadEnabled`, because the modules a page executes can be private and a tool
+that ships them off by default is an exfiltration channel wearing a badge. See
+[`docs/api-spec.md`](docs/api-spec.md).
+
 ## How capture works
 
 WebAssembly reaches the engine through five entry points, and Wasm-Sentry wraps

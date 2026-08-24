@@ -4,6 +4,9 @@ node_modules/
 # build output
 dist/
 *.tsbuildinfo
+# tsc emitting next to the sources it compiled, which it should never do
+backend/**/*.js
+!backend/**/*.config.js
 
 # env / local
 .env

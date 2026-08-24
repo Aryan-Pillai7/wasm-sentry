@@ -268,6 +268,38 @@ Analysis therefore runs in the extension. The backend was cut back to a health
 endpoint rather than left as an endpoint that accepts artifacts and silently
 drops them.
 
+### 3.2 What the backend is for, now that it does something
+
+It stores artifacts and analyses them with **the same engine, unchanged** —
+which is the whole reason `core` has no runtime dependencies. A verdict computed
+on the server is the verdict the browser would have reached; `miner.wasm` scores
+63/100 in both. Two implementations would have been two threat models and no way
+to compare them.
+
+What that buys, for a user who opts in: artifacts survive across browsers and
+profiles, and a rule change can be re-run over everything ever seen without the
+browser having to observe those modules again.
+
+Three choices worth stating:
+
+- **`node:sqlite`, not a native module.** A backend that needs a compiler
+  toolchain to install is a backend nobody runs, and the built-in driver is
+  exactly as capable for a store this shape. It costs a Node floor of 22.13.
+- **One job at a time.** Analysis is CPU-bound and synchronous — the engine is
+  built that way so it can run inside an MV3 service worker — so two at once on
+  one thread finishes neither sooner and only makes the event loop worse.
+  Scaling means more processes, not more concurrency in the queue.
+- **The queue lives in SQLite, not in memory.** A restart resumes rather than
+  forgetting, and a job left `running` by a crash is re-queued on the next
+  start. Analysis is deterministic, so re-running one costs a parse and nothing
+  else — and the alternative is a job nobody will ever finish.
+
+`X-Artifact-Hash` is treated as a claim, not as identity: the bytes are hashed
+server-side regardless, exactly as they are in the service worker. The header is
+still checked, and a mismatch refused — not because the claim is dangerous, but
+because a mismatch means the two ends disagree about which module they are
+discussing.
+
 ---
 
 ## 4. Static analysis (Phase 2)
@@ -609,12 +641,14 @@ worker is instrumented from the same prelude blob.
 
 ### 6.5 Counts
 
-152 tests. 58 in `core` (sniffing, hashing, base64, parser, decoder, CFG,
-features, heuristics, scoring, runtime accumulation and runtime rules) and 94 in
+174 tests. 58 in `core` (sniffing, hashing, base64, parser, decoder, CFG,
+features, heuristics, scoring, runtime accumulation and runtime rules), 103 in
 `extension` (capture hooks, worker instrumentation and base compensation, the
-built worker prelude, the runtime monitor and socket counting, storage against a
-real IndexedDB, popup message handling, alert policy, formatting, and an
-end-to-end run through the real service worker).
+built worker prelude, the runtime monitor and socket counting, opt-in upload,
+storage against a real IndexedDB, popup message handling, alert policy,
+formatting, and an end-to-end run through the real service worker), and 13 in
+`backend` (the real routes over a real socket against an in-memory database,
+plus the queue's failure paths against a stub store).
 
 ### 6.6 No detection rate is claimed
 
@@ -632,7 +666,6 @@ criticises.
 |---|---|
 | ML classifier | Needs the Phase 2 feature pipeline (done) *and* a labelled dataset (not obtained). Heuristics are the baseline it has to beat — building the model first leaves nothing to compare against. |
 | JS bundle analysis | Needs its own consent story: shipping page scripts anywhere is a bigger privacy question than Wasm modules. |
-| SQLite + job queue | Only meaningful once upload is opt-in-able and there is deep analysis worth queueing. |
 | Element/data segment contents | Only needed for indirect-call resolution; segment *counts* are already a useful structural feature. |
 
 ---
@@ -644,7 +677,7 @@ criticises.
 - **643 KB / 1,879 functions parsed in 165 ms**; 2.4 MB / 975k instructions in 399 ms
 - **0 warnings, 0 undecodable function bodies** on both real-world modules
 - **~38 KB** added to the extension bundle by the whole analysis engine
-- **152 tests**, all green — 58 in `core`, 94 in `extension`
+- **174 tests**, all green — 58 in `core`, 103 in `extension`, 13 in `backend`
 - **12 detection rules**, every one citing evidence, 5 citing literature
 - Calibration: benign real-world modules score **6** and **21** out of 100; the
   full mining shape scores **63**

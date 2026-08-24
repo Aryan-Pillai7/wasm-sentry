@@ -18,11 +18,11 @@ Last updated after the dashboard landed.
 | 4 | Runtime behavioural monitoring | complete, tested |
 | 5 | ML classifier | not started |
 | — | JS bundle / supply-chain analysis | not started |
-| — | Backend SQLite + job queue | not started (health endpoint only) |
+| — | Backend SQLite + job queue | complete, tested |
 
 Beyond the phases, the extension has gained a dashboard, desktop notifications,
 generated icons, a testbed page, CI, and worker instrumentation that closed the
-last capture blind spot. 152 tests, all green: 58 in `core`, 94 in `extension`.
+last capture blind spot. 174 tests, all green: 58 in `core`, 103 in `extension`, 13 in `backend`.
 
 ```
 d83f408  Add a dashboard so the extension can show its own work
@@ -116,6 +116,7 @@ measured close to a full core of execution.
 ### Command line
 
 ```bash
+npm run dev -w backend                                          # the upload API on :3000
 npm run inspect   -w @wasm-sentry/core -- path/to/module.wasm   # full report + risk
 npm run calibrate -w @wasm-sentry/core -- path/to/module.wasm   # kernel candidates
 npm run fixtures                                                # regenerate testbed/*.wasm
@@ -183,7 +184,10 @@ extension/
   test/worker-prelude.test.ts builds the prelude and runs it in a fake worker scope
   test/runtime-monitor.test.ts  what the page sees, and what measuring costs
 
-backend/                 health endpoint only, ESM + tsx
+backend/                 SQLite + job queue + upload API, ESM + tsx
+  src/app.ts               routes, built as a factory so tests drive the real ones
+  src/db/                  node:sqlite store and schema
+  src/queue.ts             one job at a time, resumable across restarts
 testbed/                 local page exercising every capture path
 docs/                    architecture, detection, api-spec, this file
 ```
@@ -249,7 +253,10 @@ docs/                    architecture, detection, api-spec, this file
     own value -- the invariant check raises a `TypeError` inside the page's first
     call into its own module. `runtime-monitor.ts` reproduces the namespace
     instead. Do not "simplify" it back to a proxy.
-11. **Runtime thresholds are not corpus-calibrated, and the docs say so.** The
+11. **The backend needs Node 22.13+**, which is where `node:sqlite` stopped
+    needing a flag. That is the floor CI runs, and why the matrix starts there
+    rather than at 22.12.
+12. **Runtime thresholds are not corpus-calibrated, and the docs say so.** The
     mechanism is measured; the lines drawn on it are conservative. If you tune
     them, `docs/detection.md` has to change with them, and no detection rate may
     be claimed either way.
@@ -277,8 +284,6 @@ Blocked on data, not code. Now the last unfinished phase.
 
 ### Smaller items
 
-- Backend Phase 2: SQLite, job queue, `POST /api/artifacts` taking raw bytes as
-  `application/octet-stream`. Spec already written in `docs/api-spec.md`.
 - JS bundle analysis — needs its own consent design first; shipping page scripts
   anywhere is a bigger privacy question than Wasm modules.
 

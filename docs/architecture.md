@@ -165,8 +165,12 @@ Keeping the bytes is what makes re-scoring possible: runtime evidence arrives
 tens of seconds after the capture, and re-running the rules needs the module
 again.
 
-**Backend (SQLite, Phase 2).** Sessions, jobs and results, per
-`backend/src/db/schema.sql`.
+**Backend (SQLite).** `artifacts` keyed by content hash, with the bytes, so a
+rule change can be re-run without the browser ever seeing the module again;
+`jobs` is the queue itself, which is why a restart resumes rather than forgets;
+`results` holds one verdict per artifact. Schema in
+`backend/src/db/schema.sql`, driven by Node's built-in `node:sqlite` — a backend
+that needs a compiler toolchain to install is a backend nobody runs.
 
 ## Design constraints
 
