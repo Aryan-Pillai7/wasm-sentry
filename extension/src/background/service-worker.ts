@@ -14,12 +14,15 @@
  */
 import {
   accumulateRuntime,
+  analyzeJs,
+  analyzeScriptInventory,
   analyzeWasm,
   base64ToBytes,
   buildScorecard,
   sha256,
   sniff,
   summarise,
+  summariseJs,
 } from "@wasm-sentry/core";
 import type {
   ClassifierModel,
@@ -38,16 +41,21 @@ import {
   getAnalyses,
   getArtifacts,
   getArtifactBytes,
+  getExternalScriptsByTab,
   getNotesByTab,
   getRecentEvents,
   getRuntimeByTab,
+  getScriptsByTab,
   getSightingsByTab,
   hasAnalysis,
+  hasScript,
   linkFingerprint,
   prune,
   resolveFingerprints,
   saveAnalysis,
+  saveExternalScript,
   saveRuntimeReport,
+  saveScript,
   upsertArtifact,
 } from "../utils/db";
 import type { RuntimeRow, SightingRow } from "../utils/db";
@@ -63,7 +71,9 @@ import type {
   ExtensionMessage,
   ModuleRow,
   RuntimeRequest,
+  ScriptRequest,
   SkipRequest,
+  TabScriptView,
   TabReport,
   TabArtifactView,
 } from "../shared/protocol";
@@ -263,6 +273,82 @@ function classifier(): Promise<ClassifierModel | undefined> {
 }
 
 /* ------------------------------------------------------------------ */
+/* JavaScript intake                                                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Take one observed script.
+ *
+ * Inline source is measured here and then dropped: what is written to storage
+ * is the measurements and the verdict, never the text. That is the whole
+ * consent design -- a script on an authenticated page can carry far more of
+ * somebody's private business than a compiled module does, so the extension
+ * keeps what it needs to explain a finding and nothing that could reconstruct
+ * the code.
+ *
+ * External scripts never arrive with contents at all. Only their origin,
+ * whether they are third-party and whether they are pinned.
+ */
+async function handleScript(
+  message: ScriptRequest,
+  sender: chrome.runtime.MessageSender,
+): Promise<{ ok: boolean; hash?: string }> {
+  const tabId = sender.tab?.id ?? -1;
+  const now = Date.now();
+
+  if (message.external) {
+    await saveExternalScript({
+      key: `${tabId}|${message.external.url}`,
+      tabId,
+      url: message.external.url,
+      thirdParty: message.external.thirdParty,
+      hasIntegrity: message.external.hasIntegrity,
+      injected: message.external.injected,
+      seenAt: now,
+    });
+    return { ok: true };
+  }
+
+  if (!message.inline) return { ok: false };
+
+  const { origin, source } = message.inline;
+  // Hashed here for the same reason modules are: identity is the content, and
+  // the same bootstrap script inlined on a hundred pages is analysed once.
+  const hash = await sha256(new TextEncoder().encode(source));
+
+  if (!(await hasScript(hash))) {
+    const analysis = summariseJs(hash, analyzeJs(source));
+    await saveScript({
+      hash,
+      tabId,
+      pageUrl: message.pageUrl,
+      origin,
+      byteLength: source.length,
+      analysis,
+      seenAt: now,
+    });
+
+    if ((analysis.risk?.score ?? 0) >= 25) {
+      await addEvent({
+        timestamp: now,
+        kind: "analysed",
+        pageUrl: message.pageUrl,
+        tabId,
+        hash,
+        size: source.length,
+        ...(analysis.risk ? { level: analysis.risk.level, score: analysis.risk.score } : {}),
+        detail: analysis.risk?.findings[0]?.title ?? "script analysed",
+      });
+    }
+  }
+
+  // The source goes no further than this function. Nothing below it, and
+  // nothing in storage, has a copy.
+  await refreshBadge(tabId);
+  return { ok: true, hash };
+}
+
+/* ------------------------------------------------------------------ */
 /* Runtime intake                                                      */
 /* ------------------------------------------------------------------ */
 
@@ -428,13 +514,41 @@ async function buildTabReport(tabId: number): Promise<TabReport> {
     .map((artifact) => artifact.analysis?.risk)
     .filter((risk): risk is RiskAssessment => risk !== undefined);
 
-  const pageUrl = sightings.at(-1)?.pageUrl ?? "";
+  // Counted before JavaScript joins the list: this is "modules seen but not
+  // analysed", and a script verdict added below would make it come out wrong.
   const unanalysed = artifacts.length - assessments.length + blindSpots.length;
+
+  // JavaScript, when the user has enabled it. Its verdicts join the same
+  // scorecard: a page's risk is a fact about the page, not about which of two
+  // analysers happened to produce the evidence.
+  const [scriptRows, externalRows] = await Promise.all([
+    getScriptsByTab(tabId),
+    getExternalScriptsByTab(tabId),
+  ]);
+
+  const scripts: TabScriptView[] = scriptRows
+    .map((row) => ({
+      hash: row.hash,
+      origin: row.origin,
+      byteLength: row.byteLength,
+      analysis: row.analysis,
+    }))
+    .sort((a, b) => (b.analysis.risk?.score ?? 0) - (a.analysis.risk?.score ?? 0));
+
+  const supplyChain =
+    externalRows.length > 0 ? analyzeScriptInventory(externalRows) : undefined;
+
+  for (const script of scripts) {
+    if (script.analysis.risk) assessments.push(script.analysis.risk);
+  }
+  if (supplyChain && supplyChain.findings.length > 0) assessments.push(supplyChain);
+
+  const pageUrl = sightings.at(-1)?.pageUrl ?? scriptRows[0]?.pageUrl ?? "";
 
   return {
     tabId,
     pageUrl,
-    scorecard: buildScorecard(pageUrl, assessments, unanalysed),
+    scorecard: buildScorecard(pageUrl, assessments, Math.max(0, unanalysed)),
     artifacts,
     notes: blindSpots.map((note) => ({
       url: note.url,
@@ -443,6 +557,8 @@ async function buildTabReport(tabId: number): Promise<TabReport> {
       ...(note.api ? { api: note.api } : {}),
       timestamp: note.timestamp,
     })),
+    ...(scripts.length > 0 ? { scripts } : {}),
+    ...(supplyChain ? { supplyChain } : {}),
   };
 }
 
@@ -643,6 +759,9 @@ chrome.runtime.onMessage.addListener((raw, sender, sendResponse) => {
         break;
       case "wasm-sentry:runtime":
         work = handleRuntime(message, sender);
+        break;
+      case "wasm-sentry:script":
+        work = handleScript(message, sender);
         break;
       case "wasm-sentry:tab-report":
         work = buildTabReport(message.tabId);

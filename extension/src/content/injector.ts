@@ -28,6 +28,7 @@
 import { installHooks } from "./capture-hooks";
 import type { HookCapture, HookSkip, WasmNamespace } from "./capture-hooks";
 import { createMonitor } from "./runtime-monitor";
+import { installScriptHooks } from "./script-hooks";
 import { installSocketHooks } from "./socket-hooks";
 import { installWorkerHook } from "./worker-hooks";
 import type { RuntimeReport } from "@wasm-sentry/core";
@@ -129,15 +130,41 @@ if (!guard[INSTALLED]) {
     /* Losing worker coverage is a coverage loss, never a broken page. */
   }
 
-  // Both settings live in extension storage, which is async, while these hooks
-  // have to exist before the page's first line runs. They are therefore on by
-  // default and switched off a moment later when the user has turned them off,
-  // taking full effect from the next navigation.
+  // The capture settings live in extension storage, which is async, while these
+  // hooks have to exist before the page's first line runs. Worker
+  // instrumentation and runtime monitoring are therefore on by default and
+  // switched off a moment later when the user has turned them off, taking full
+  // effect from the next navigation.
+  //
+  // JavaScript analysis is the other way round -- off until the user asks --
+  // because it is the only path that reads source the page has not published
+  // to anyone else. Missing the first few scripts is the price of not reading
+  // them without consent, and it is the right way round to be wrong.
   window.addEventListener("message", (event: MessageEvent) => {
     if (event.source !== window) return;
     const data = event.data as { channel?: unknown; command?: unknown } | null;
     if (data?.channel !== CHANNEL) return;
     if (data.command === "disable-worker-instrumentation") workerHook?.disable();
     if (data.command === "disable-runtime-monitoring") monitor.disable();
+    if (data.command === "enable-javascript-analysis") enableScriptAnalysis();
   });
+}
+
+let scriptHooksInstalled = false;
+
+/** Start reading the page's own scripts. Only ever called on an explicit opt-in. */
+function enableScriptAnalysis(): void {
+  if (scriptHooksInstalled) return;
+  scriptHooksInstalled = true;
+  try {
+    installScriptHooks({
+      document,
+      pageOrigin: location.href,
+      scope: globalThis as { Function?: unknown },
+      emitInline: (script) => post({ script: { inline: script } }),
+      emitExternal: (script) => post({ script: { external: script } }),
+    });
+  } catch {
+    /* Losing script coverage is a coverage loss, never a broken page. */
+  }
 }

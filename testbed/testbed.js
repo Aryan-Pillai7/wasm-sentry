@@ -154,6 +154,41 @@ const RUNS = {
     say(`10. ${replies.length} workers finished: ${replies[0]}`, "ok");
     say("    the module should now be scored on what it did, not only its shape", "ok");
   },
+
+  // Needs "Analyse JavaScript" enabled. The script below computes nothing: it
+  // is shaped like an obfuscated loader -- escaped strings, a base64 blob and
+  // something that would evaluate it -- so the scanner has an honest example to
+  // measure without a real payload being committed here.
+  async jsInline() {
+    const BACKSLASH = String.fromCharCode(92);
+    const hex = (text) =>
+      [...text]
+        .map((c) => BACKSLASH + "x" + c.charCodeAt(0).toString(16).padStart(2, "0"))
+        .join("");
+
+    const script = document.createElement("script");
+    script.textContent =
+      `var _0x1f=["${hex("WebAssembly")}","${hex("hardwareConcurrency")}"];` +
+      `var _0x2a="${"ZnVuY3Rpb24gbm9vcCgpe3JldHVybiAwfQ".repeat(4)}";` +
+      `if(false){eval(atob(_0x2a));}` +
+      `void _0x1f;`;
+    document.body.appendChild(script);
+    say("11. injected an obfuscated-looking inline script (it runs nothing)", "warn");
+    say("    expect a JavaScript finding in the popup, and no source stored anywhere", "warn");
+  },
+
+  // A third-party script with no Subresource Integrity: the classic supply
+  // chain exposure, visible from the markup without reading anything.
+  async jsThirdParty() {
+    const script = document.createElement("script");
+    script.src = "https://cdn.example.invalid/analytics.js";
+    script.async = true;
+    // It will fail to load, which does not matter: the finding is about the
+    // reference, and the extension never fetches it either.
+    script.onerror = () => say("12. the third-party script failed to load, as expected", "ok");
+    document.body.appendChild(script);
+    say("12. referenced an unpinned third-party script -- expect a supply-chain note", "warn");
+  },
 };
 
 document.addEventListener("click", async (event) => {

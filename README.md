@@ -9,12 +9,13 @@ never touch the network — disassembles it, and explains what it does in terms 
 person can act on. It is built as a Chrome MV3 extension with a shared analysis
 engine that runs unchanged in the browser, in Node, and in tests.
 
-> Status: all five phases built. Capture, disassembly, static analysis,
-> heuristic detection, the Privacy Scorecard, runtime behavioural monitoring and
-> the classifier pipeline are complete and tested. **No trained model ships**,
-> because no labelled corpus exists to train one honestly, and no detection rate
-> is claimed anywhere in this repository. See
-> [`docs/architecture.md`](docs/architecture.md) for the full pipeline.
+> Status: all five phases built, plus JavaScript and supply-chain analysis.
+> Capture, disassembly, static analysis, heuristic detection, the Privacy
+> Scorecard, runtime behavioural monitoring and the classifier pipeline are
+> complete and tested. **No trained model ships**, because no labelled corpus
+> exists to train one honestly, and no detection rate is claimed anywhere in
+> this repository. See [`docs/architecture.md`](docs/architecture.md) for the
+> full pipeline.
 
 ## Layout
 
@@ -142,6 +143,28 @@ finding rather than just the score, and is de-duplicated per site and module so
 a reload never notifies twice. Turn it off with the `notifyOnHighRisk` setting.
 
 The popup is only needed for per-page detail.
+
+## JavaScript, and the switch it sits behind
+
+The project's other half, and the one that waited longest — not for code, but
+for a consent design. **A page's scripts can carry far more of your business
+than a compiled module can**: an internal build, a signed-in application, a
+token inlined into a bootstrap script. So JavaScript analysis is the one capture
+path that is **off until you turn it on**, and when it is on:
+
+- external scripts are never fetched or read — only their origin and whether
+  they are pinned with Subresource Integrity, which the markup already says;
+- what *is* read is what the page assembled itself: inline source and
+  `new Function` bodies, which never crossed the network;
+- source is measured and thrown away. Only the measurements and the verdict are
+  stored, and JavaScript is never uploaded whatever the upload setting says.
+
+Calibrating it was the inverse of the WebAssembly problem. Almost nothing
+compiled looks like a mining kernel; almost all production JavaScript looks
+obfuscated — minified to one enormous line of one-character identifiers. The
+measurement that actually separates them is **escape density**: `ajv.min.js` has
+a 119,360-character line and 0.93% escapes, while an obfuscated payload runs
+55–99%, because a minifier shortens code and an obfuscator hides it.
 
 ## The classifier
 

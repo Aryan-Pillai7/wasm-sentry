@@ -17,12 +17,12 @@ Last updated after the dashboard landed.
 | 3 | Heuristics + Privacy Scorecard | complete, tested |
 | 4 | Runtime behavioural monitoring | complete, tested |
 | 5 | ML classifier | pipeline complete and tested; no model, no corpus |
-| — | JS bundle / supply-chain analysis | not started |
+| — | JS bundle / supply-chain analysis | complete, tested, opt-in |
 | — | Backend SQLite + job queue | complete, tested |
 
 Beyond the phases, the extension has gained a dashboard, desktop notifications,
 generated icons, a testbed page, CI, and worker instrumentation that closed the
-last capture blind spot. 207 tests, all green: 85 in `core`, 109 in `extension`, 13 in `backend`.
+last capture blind spot. 233 tests, all green: 99 in `core`, 121 in `extension`, 13 in `backend`.
 
 ```
 d83f408  Add a dashboard so the extension can show its own work
@@ -149,6 +149,10 @@ core/                    @wasm-sentry/core -- zero runtime dependencies
     report.ts            summarise(): full analysis -> storable record
     heuristics.ts        12 static + 5 runtime rules, + the classifier's opinion
     runtime.ts           runtime vocabulary; folding reports into features
+    js/features.ts       lexical scan; escape density is what separates
+                         minified from obfuscated
+    js/heuristics.ts     7 JavaScript and supply-chain rules
+    js/analysis.ts       analyzeJs(): never throws; summariseJs() keeps no source
     ml/features.ts       versioned feature vector; order is part of the model
     ml/model.ts          the model type, inference, and strict parsing
     ml/train.ts          logistic regression, no dependencies
@@ -170,6 +174,7 @@ extension/
     content/injector.ts       MAIN-world entry
     content/runtime-monitor.ts  export timing, timer drift, per-context reports
     content/socket-hooks.ts   WebSocket open/message counts (counts only)
+    content/script-hooks.ts   inline scripts + `new Function`; opt-in, no source stored
     content/capture-hooks.ts  interception logic (globals injected -> testable)
     content/worker-hooks.ts   Worker constructor wrapper, shim source, message intake
     content/worker-prelude.ts what runs inside a worker; bundled to a string
@@ -181,7 +186,7 @@ extension/
     popup/load-report.ts      message fetching with every failure mode named
     dashboard/                cross-tab activity, status, modules, settings
     shared/protocol.ts        message types + caps
-    utils/db.ts               IndexedDB (schema v4)
+    utils/db.ts               IndexedDB (schema v5)
     utils/settings.ts         local-first defaults
   scripts/build-scripts.mjs   esbuild; builds the prelude to a string first
   scripts/make-icons.mjs      renders + encodes the PNG icons
@@ -250,7 +255,7 @@ docs/                    architecture, detection, api-spec, this file
    Found in the real browser, not in a unit test — the testbed fixtures wait a
    beat before `terminate()` so they demonstrate capture rather than the race.
    Nothing is silently lost: the network observer still notes the module.
-9. **IndexedDB is at schema v4.** Upgrades drop all stores rather than
+9. **IndexedDB is at schema v5.** Upgrades drop all stores rather than
    migrating; the contents are a cache of things the browser can observe again.
    Bump `DB_VERSION` in `extension/src/utils/db.ts` when stores change.
 10. **A `Proxy` over an instance's exports throws.** The namespace is frozen with
@@ -265,7 +270,12 @@ docs/                    architecture, detection, api-spec, this file
     added, removed, reordered or rescaled. Inference refuses a model trained on
     a different version rather than scoring the wrong columns, which is the one
     failure here that produces confident nonsense with no way to notice.
-13. **Runtime thresholds are not corpus-calibrated, and the docs say so.** The
+13. **JavaScript analysis is off by default, and that is the design, not an
+    oversight.** It is the only capture path that reads something the page has
+    not published to anyone else. External script contents are never fetched,
+    source is never stored, and `eval` is deliberately not hooked -- wrapping it
+    turns direct eval into indirect eval and changes scoping.
+14. **Runtime thresholds are not corpus-calibrated, and the docs say so.** The
     mechanism is measured; the lines drawn on it are conservative. If you tune
     them, `docs/detection.md` has to change with them, and no detection rate may
     be claimed either way.
@@ -307,8 +317,8 @@ without one, nothing in the extension changes.
 
 ### Smaller items
 
-- JS bundle analysis — needs its own consent design first; shipping page scripts
-  anywhere is a bigger privacy question than Wasm modules.
+Nothing on the original list is outstanding. What is left is the corpus above,
+and whatever the next person finds.
 
 ---
 

@@ -2,7 +2,9 @@ import type {
   ArtifactAnalysis,
   ArtifactKind,
   CaptureSource,
+  JsArtifactAnalysis,
   PageScorecard,
+  RiskAssessment,
   RiskLevel,
   RuntimeReport,
   WasmApi,
@@ -97,6 +99,23 @@ export interface RuntimeRequest {
   report: RuntimeReport;
 }
 
+/**
+ * A piece of JavaScript the page assembled and ran, or the metadata of one it
+ * loaded. Only sent when the user has enabled JavaScript analysis.
+ *
+ * Inline source travels to the service worker, is measured there and is *not*
+ * stored: what persists is the measurements and the verdict. External scripts
+ * are metadata only and their contents are never read at all.
+ */
+export interface ScriptRequest {
+  type: "wasm-sentry:script";
+  pageUrl: string;
+  /** Present for source the page assembled itself. */
+  inline?: { origin: "inline" | "injected-inline" | "Function"; source: string };
+  /** Present for a script the page loaded by URL. Never carries its contents. */
+  external?: { url: string; thirdParty: boolean; hasIntegrity: boolean; injected: boolean };
+}
+
 /** Popup asking the service worker what it has seen in a given tab. */
 export interface TabReportRequest {
   type: "wasm-sentry:tab-report";
@@ -128,6 +147,7 @@ export type ExtensionMessage =
   | CaptureRequest
   | SkipRequest
   | RuntimeRequest
+  | ScriptRequest
   | TabReportRequest
   | PingRequest
   | ActivityRequest
@@ -162,6 +182,14 @@ export interface TabArtifactView {
   analysis?: ArtifactAnalysis;
 }
 
+/** One analysed piece of JavaScript, as the popup receives it. */
+export interface TabScriptView {
+  hash: string;
+  origin: "inline" | "injected-inline" | "Function";
+  byteLength: number;
+  analysis: JsArtifactAnalysis;
+}
+
 /** Everything the popup needs to render one tab. */
 export interface TabReport {
   tabId: number;
@@ -170,6 +198,10 @@ export interface TabReport {
   scorecard: PageScorecard;
   artifacts: TabArtifactView[];
   notes: Array<{ url: string; reason: string; size: number; api?: WasmApi; timestamp: number }>;
+  /** Analysed JavaScript. Empty unless the user enabled it. */
+  scripts?: TabScriptView[];
+  /** The supply-chain verdict over this page's external scripts, if any. */
+  supplyChain?: RiskAssessment;
 }
 
 /** One line of the activity feed, as the dashboard receives it. */

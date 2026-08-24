@@ -67,6 +67,49 @@ weighted so that it cannot on its own accuse anything; escalation requires the
 static kernel too, which is the same corroboration-not-accumulation rule the
 static side already followed.
 
+## JavaScript rules
+
+Opt-in, and calibrated against the opposite problem. Ordinary compiled
+WebAssembly looks nothing like a mining kernel; ordinary production JavaScript
+looks *exactly* like obfuscated JavaScript to any naive test.
+
+| Rule | Weight | What it measures |
+|---|---|---|
+| `js-known-miner-family` | 45 | Names a known browser mining family. |
+| `js-mining-pool-endpoint` | 35 | A `stratum://` or pool-shaped socket address. A bare `wss://` is not matched — every chat application opens one. |
+| `js-decoded-code-execution` | 30 | Runtime evaluation **and** base64 decoding together. Either alone is ordinary. |
+| `js-miner-bootstrap-shape` | 25 | Three or more of: WebAssembly calls, Worker construction, a `hardwareConcurrency` read, a socket. |
+| `js-obfuscated-source` | 20 | Escape density above 5%. |
+| `js-injects-remote-script` | 8 | Injects script elements. Every tag manager does this; it is context, not an accusation. |
+| `js-third-party-unpinned` | 6 | Third-party scripts with no Subresource Integrity, from markup alone. |
+
+### Calibration
+
+Measured against real production bundles in this repository's own
+`node_modules`, and against payloads built the way an obfuscator writes them:
+
+| Source | Size | Escape density | `eval` | `atob` |
+|---|---|---|---|---|
+| `react-dom.production.js` | 6 KB | 0.000% | 0 | 0 |
+| `esquery.esm.min.js` | 36 KB | 0.131% | 0 | 0 |
+| `ajv.min.js` | 117 KB | 0.928% | 0 | 0 |
+| `typescript.js` | 8.9 MB | 0.006% | 0 | 0 |
+| hex-escaped payload | 0.4 KB | **54.8%** | 1 | 1 |
+| packed payload | 6.3 KB | **98.9%** | 1 | 0 |
+
+**Escape density is the separator, not line length or entropy.** `ajv.min.js`
+has a 119,360-character line and is entirely legitimate; every real bundle sits
+between 4.7 and 5.4 bits of entropy, as does obfuscated code. A minifier
+shortens code; an obfuscator hides it, and hiding it means escaping it.
+
+The threshold is 5%: 5.4x above the worst real bundle and 11x below the mildest
+obfuscated sample. Not one of the four real bundles calls `eval` or `atob` at
+all, which is what makes `js-decoded-code-execution` safe at weight 30.
+
+These measurements live in `core/test/js.test.ts` as assertions, not only in
+this table, so a threshold change breaks a test rather than quietly invalidating
+a document nobody re-reads.
+
 ## The classifier
 
 One more rule exists and does not fire, because no model ships with this
@@ -194,6 +237,10 @@ sustained CPU is the signal that settles the question, and it arrives in Phase 4
   than disappears: the network observer still records the module as
   `network-only`, so the report says "not analysed" instead of implying a clean
   page.
+- **JavaScript analysis reads only what the page wrote itself.** External
+  script contents are never fetched, so a payload delivered inside a third-party
+  bundle is seen as an unpinned third-party script and not as its contents.
+  `eval` is not hooked either, for a reason given in `script-hooks.ts`.
 - **A worker whose shim is refused stays a blind spot.** Modules compiled inside
   a Web Worker are analysed now — the hooks are carried in by a shim the
   extension starts the worker from — but a Content Security Policy that forbids

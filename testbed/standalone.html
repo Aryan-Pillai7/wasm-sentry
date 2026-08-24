@@ -68,6 +68,7 @@
       const captures = [];
       const leaks = [];
       const runtime = [];
+      const scripts = [];
 
       window.addEventListener("message", (event) => {
         if (event.source !== window) return;
@@ -88,6 +89,9 @@
         // worker keys everything else by.
         if (data.channel === "wasm-sentry:capture:v1" && data.runtime) {
           runtime.push({ contextId: data.contextId, report: data.runtime });
+        }
+        if (data.channel === "wasm-sentry:capture:v1" && data.script) {
+          scripts.push(data.script);
         }
         // The worker channel must be intercepted and stopped before any page
         // listener runs. One of these reaching here is a failure of the whole
@@ -212,6 +216,43 @@
         check("measured execution time reflects a kernel that really ran",
               busiest > GRIND_SECONDS * 500,
               `busiest worker spent ${(busiest / 1000).toFixed(1)}s executing`);
+
+        // JavaScript analysis is opt-in in the extension; the injector switches
+        // it on when told to, and this page is the thing telling it.
+        window.postMessage(
+          { channel: "wasm-sentry:capture:v1", command: "enable-javascript-analysis" },
+          "*",
+        );
+        await new Promise((resolve) => setTimeout(resolve, 50));
+
+        const BACKSLASH = String.fromCharCode(92);
+        const hex = (text) =>
+          [...text]
+            .map((c) => BACKSLASH + "x" + c.charCodeAt(0).toString(16).padStart(2, "0"))
+            .join("");
+
+        const injected = document.createElement("script");
+        injected.textContent =
+          `var _0x1f=["${hex("WebAssembly")}","${hex("hardwareConcurrency")}"];` +
+          `var _0x2a="${"ZnVuY3Rpb24gbm9vcCgpe3JldHVybiAwfQ".repeat(4)}";` +
+          `if(false){eval(atob(_0x2a));}void _0x1f;`;
+        document.body.appendChild(injected);
+
+        const external = document.createElement("script");
+        external.src = "https://cdn.example.invalid/analytics.js";
+        document.body.appendChild(external);
+        await new Promise((resolve) => setTimeout(resolve, 200));
+
+        const inlineSeen = scripts.filter((entry) => entry.inline);
+        const externalSeen = scripts.filter((entry) => entry.external);
+
+        check("an injected inline script was read", inlineSeen.length > 0,
+              `${inlineSeen.length} inline`);
+        check("a third-party script was noted without being fetched",
+              externalSeen.some((entry) => entry.external.thirdParty && !entry.external.hasIntegrity),
+              JSON.stringify(externalSeen.map((e) => e.external.url)));
+        check("external script contents were never read",
+              externalSeen.every((entry) => !("source" in entry.external)));
 
         say("");
         say(`captures (${captures.length}):`, "note");

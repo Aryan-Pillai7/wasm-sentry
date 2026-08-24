@@ -40,6 +40,20 @@ export interface Settings {
    * so, like worker instrumentation, it has a switch.
    */
   monitorRuntime: boolean;
+  /**
+   * Analyse the JavaScript a page runs, as well as its WebAssembly.
+   *
+   * **Off by default, and the only capture path that is.** Every other one sees
+   * things the page has already published to itself; this one reads the source
+   * of inline scripts, which on an authenticated page can carry far more of
+   * somebody's private business than a compiled module does. External scripts
+   * are never fetched or read either way -- only their origin and whether they
+   * are pinned with Subresource Integrity, which is already in the markup.
+   *
+   * Source is measured and the measurements are stored. The text itself is not
+   * stored and is never uploaded, whatever `uploadEnabled` says.
+   */
+  analyseJavaScript: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -49,6 +63,8 @@ export const DEFAULT_SETTINGS: Settings = {
   notifyOnHighRisk: true,
   instrumentWorkers: true,
   monitorRuntime: true,
+  // The one default that is off. See the note above.
+  analyseJavaScript: false,
 };
 
 const KEY = "settings";

@@ -7,7 +7,7 @@ import type {
   RiskAssessment,
   RuntimeFeatures,
 } from "@wasm-sentry/core";
-import type { TabReport, TabArtifactView } from "../shared/protocol";
+import type { TabReport, TabArtifactView, TabScriptView } from "../shared/protocol";
 import { loadReport } from "./load-report";
 import "./popup.css";
 
@@ -206,6 +206,56 @@ function ArtifactCard({ artifact }: { artifact: TabArtifactView }): React.JSX.El
   );
 }
 
+const SCRIPT_ORIGIN_LABELS: Record<string, string> = {
+  inline: "inline script",
+  "injected-inline": "script injected at runtime",
+  Function: "code built with new Function",
+};
+
+/**
+ * An analysed piece of JavaScript.
+ *
+ * Deliberately shows measurements and never source. The extension does not
+ * keep the source -- see the consent note in `script-hooks.ts` -- so there is
+ * nothing here to show even if it were wanted.
+ */
+function ScriptCard({ script }: { script: TabScriptView }): React.JSX.Element {
+  const analysis = script.analysis;
+  const summary = analysis.summary;
+
+  return (
+    <li className="artifact">
+      <div className="artifact-head">
+        <code className="hash">{script.hash.slice(0, 12)}</code>
+        <span className="size">{formatBytes(script.byteLength)}</span>
+      </div>
+      <div className="artifact-url">
+        {SCRIPT_ORIGIN_LABELS[script.origin] ?? script.origin}
+      </div>
+      <div className="artifact-meta">
+        <span className="tag">js</span>
+        {analysis.truncated ? <span className="tag">partly scanned</span> : null}
+        {analysis.risk && (
+          <span className={`verdict level-${analysis.risk.level}`}>{analysis.risk.score}</span>
+        )}
+      </div>
+
+      {analysis.risk && <Findings risk={analysis.risk} />}
+
+      {summary && (
+        <div className="facts">
+          <dl>
+            <div><dt>lines</dt><dd>{summary.lineCount}</dd></div>
+            <div><dt>escapes</dt><dd>{percent(summary.escapeDensity)}</dd></div>
+            <div><dt>entropy</dt><dd>{summary.entropy.toFixed(2)}</dd></div>
+            <div><dt>eval sites</dt><dd>{summary.evalSites}</dd></div>
+          </dl>
+        </div>
+      )}
+    </li>
+  );
+}
+
 function Popup(): React.JSX.Element {
   const [report, setReport] = useState<TabReport | null>(null);
   const [failure, setFailure] = useState<{ message: string; hint?: string } | null>(null);
@@ -284,6 +334,24 @@ function Popup(): React.JSX.Element {
             <ArtifactCard key={artifact.hash} artifact={artifact} />
           ))}
         </ul>
+      )}
+
+      {report.scripts && report.scripts.length > 0 && (
+        <section className="notes">
+          <h2>JavaScript ({report.scripts.length})</h2>
+          <ul className="artifacts">
+            {report.scripts.map((script) => (
+              <ScriptCard key={script.hash} script={script} />
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {report.supplyChain && report.supplyChain.findings.length > 0 && (
+        <section className="notes">
+          <h2>Supply chain</h2>
+          <Findings risk={report.supplyChain} />
+        </section>
       )}
 
       <p className="footer">

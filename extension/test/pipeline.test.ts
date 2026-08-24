@@ -278,6 +278,62 @@ test("a report about a module we never captured is dropped, not guessed at", asy
   assert.equal(reply.rescored, 0);
 });
 
+test("an inline script is analysed, and its source is not kept", async () => {
+  const secret = "sk-live-do-not-store-this-anywhere";
+  const source =
+    `var token="${secret}";eval(atob("${"ZnVuY3Rpb24oKXt9".repeat(8)}"));` +
+    `new WebSocket("wss://xmr-pool.test/stratum");`;
+
+  const reply = await send(
+    {
+      type: "wasm-sentry:script",
+      pageUrl: "https://scripts.test/app",
+      inline: { origin: "inline", source },
+    },
+    { tab: { id: 91 }, frameId: 0 },
+  );
+  assert.equal(reply.ok, true);
+
+  const report = await send({ type: "wasm-sentry:tab-report", tabId: 91 });
+  assert.equal(report.scripts.length, 1);
+
+  const analysed = report.scripts[0];
+  assert.equal(analysed.origin, "inline");
+  const ids = analysed.analysis.risk.findings.map((finding: { id: string }) => finding.id);
+  assert.ok(ids.includes("js-decoded-code-execution"), ids.join(","));
+  assert.ok(ids.includes("js-mining-pool-endpoint"), ids.join(","));
+
+  // The measurement survives the trip; the source does not. A script on an
+  // authenticated page can carry far more of somebody's private business than
+  // a compiled module does, which is the whole reason this path is opt-in.
+  assert.equal(
+    JSON.stringify(report).includes(secret),
+    false,
+    "the script's source reached the stored report",
+  );
+});
+
+test("external scripts contribute a supply-chain view and no contents", async () => {
+  for (const external of [
+    { url: "https://app.test/main.js", thirdParty: false, hasIntegrity: false, injected: false },
+    { url: "https://ads.other.test/t.js", thirdParty: true, hasIntegrity: false, injected: true },
+  ]) {
+    await send(
+      { type: "wasm-sentry:script", pageUrl: "https://scripts.test/app", external },
+      { tab: { id: 92 }, frameId: 0 },
+    );
+  }
+
+  const report = await send({ type: "wasm-sentry:tab-report", tabId: 92 });
+  assert.ok(report.supplyChain);
+  const finding = report.supplyChain.findings[0];
+  assert.equal(finding.id, "js-third-party-unpinned");
+  assert.match(finding.evidence, /ads\.other\.test/);
+  // Most of the web loads unpinned third-party scripts. Worth surfacing, not
+  // worth accusing anybody of.
+  assert.ok(report.supplyChain.score < 10, `scored ${report.supplyChain.score}`);
+});
+
 test("the badge is coloured by the verdict, not just counted", () => {
   const colours = badges.filter((badge) => badge.color).map((badge) => badge.color);
   assert.ok(colours.includes("#d1242f"), `expected the high-risk red, saw ${colours.join(",")}`);

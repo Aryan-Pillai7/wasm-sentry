@@ -16,6 +16,7 @@ import type {
   CaptureContext,
   CaptureRequest,
   RuntimeRequest,
+  ScriptRequest,
   SkipRequest,
 } from "../shared/protocol";
 import { getSettings } from "../utils/settings";
@@ -38,7 +39,7 @@ function contextOf(value: unknown): CaptureContext {
   return typeof value === "string" && VALID_CONTEXTS.has(value) ? (value as CaptureContext) : "page";
 }
 
-function send(message: CaptureRequest | SkipRequest | RuntimeRequest): void {
+function send(message: CaptureRequest | SkipRequest | RuntimeRequest | ScriptRequest): void {
   // Fire and forget. A closed service worker, a torn-down extension context or
   // a navigation mid-flight all reject here, and none of them are actionable.
   void chrome.runtime.sendMessage(message).catch(() => undefined);
@@ -67,6 +68,25 @@ window.addEventListener("message", (event: MessageEvent) => {
       contextId,
       pageUrl: pageUrlValue,
       report: runtime as RuntimeRequest["report"],
+    });
+    return;
+  }
+
+  // A script observation, which carries no bytes and no API either.
+  const script = data["script"];
+  if (script !== undefined) {
+    if (typeof script !== "object" || script === null) return;
+    if (typeof pageUrlValue !== "string") return;
+    const { inline, external } = script as {
+      inline?: NonNullable<ScriptRequest["inline"]>;
+      external?: NonNullable<ScriptRequest["external"]>;
+    };
+    if (inline === undefined && external === undefined) return;
+    send({
+      type: "wasm-sentry:script",
+      pageUrl: pageUrlValue,
+      ...(inline !== undefined ? { inline } : {}),
+      ...(external !== undefined ? { external } : {}),
     });
     return;
   }
@@ -128,6 +148,10 @@ void getSettings()
     }
     if (!settings.monitorRuntime) {
       window.postMessage({ channel: CAPTURE_CHANNEL, command: "disable-runtime-monitoring" }, "*");
+    }
+    // The one that is off by default, so this switches it on rather than off.
+    if (settings.analyseJavaScript) {
+      window.postMessage({ channel: CAPTURE_CHANNEL, command: "enable-javascript-analysis" }, "*");
     }
   })
   .catch(() => undefined);

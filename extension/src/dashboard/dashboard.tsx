@@ -283,6 +283,12 @@ const TOGGLES: Array<{ key: string; label: string; description: string }> = [
       "Notes Wasm seen on the network that the page hook could not reach, such as modules compiled inside a Web Worker.",
   },
   {
+    key: "analyseJavaScript",
+    label: "Analyse JavaScript as well as WebAssembly",
+    description:
+      "Off by default, and the only capture path that is. It reads the source of scripts the page wrote itself, which on a signed-in page can hold far more of your business than a compiled module does. External scripts are never fetched or read — only their origin and whether they are pinned. Source is measured and thrown away; it is never stored and never uploaded.",
+  },
+  {
     key: "uploadEnabled",
     label: "Upload artifacts to the backend",
     description:

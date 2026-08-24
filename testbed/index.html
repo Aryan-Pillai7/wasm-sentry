@@ -51,6 +51,16 @@
     <p>
       <button data-run="grind"><strong>10. grind for 25s across every core</strong></button>
     </p>
+    <p>
+      <button data-run="jsInline">11. an obfuscated inline script</button>
+      <button data-run="jsThirdParty">12. an unpinned third-party script</button>
+    </p>
+    <p class="lede">
+      Buttons 11 and 12 need <strong>Analyse JavaScript</strong> turned on in the
+      dashboard. It is off by default: it is the only part of the extension that
+      reads source a page has not already published to anyone else.
+    </p>
+
     <p><button data-run="all"><strong>Run all</strong></button></p>
 
     <div id="log">ready.</div>

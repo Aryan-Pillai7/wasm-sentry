@@ -41,6 +41,20 @@ listener can see it. A worker whose shim is refused -- a Content Security Policy
 that forbids `blob:` workers -- runs untouched and falls back to being reported
 as `network-only`.
 
+**Script observation** (`extension/src/content/script-hooks.ts`), *off by
+default*. Every other capture path sees only what the page has already
+published to itself; this one reads the source of scripts the page wrote, which
+on an authenticated page can carry far more of somebody's private business than
+a compiled module does. So it is the one path the user switches on.
+
+External scripts are never fetched or read. What is recorded about them is
+origin, third-partyness and whether they carry Subresource Integrity -- facts
+already in the markup, and what the supply-chain rule needs. What *is* read is
+inline source and `new Function` bodies: code the page assembled itself, which
+never crossed the network, and where an obfuscated loader lives. `eval` is
+deliberately not hooked -- wrapping it converts every direct call in the page
+into an indirect one and changes its scoping.
+
 **Network observer** (service worker). A `webRequest.onCompleted` listener that
 records Wasm-typed responses as metadata only — it never re-fetches. Its job is
 to notice what the hooks missed, so the report can say "one module was
@@ -84,6 +98,23 @@ weighted by bitwise density) fall out of it.
 Analysis is budgeted: it stops after a fixed instruction count and reports how
 many functions it skipped, so a hostile 50 MB module cannot hold the service
 worker open.
+
+### 3a. JavaScript analysis — *complete, opt-in*
+
+A lexical scan rather than an AST: no parser dependency, no stack to overflow on
+hostile input, and every property the rules need survives at that level.
+
+The hard part was calibration, and it is the opposite problem to WebAssembly.
+Almost nothing compiled looks like a mining kernel; almost *all* production
+JavaScript looks obfuscated to a naive test -- minified to one enormous line,
+full of one-character identifiers and opaque literals. Measuring real bundles
+found the separator: **escape density**. A minifier has no reason to escape
+anything (`ajv.min.js`: 0.93% with a 119,360-character line), while an
+obfuscator escapes nearly everything (54-99%). See
+[`detection.md`](detection.md).
+
+Source is measured and discarded. Only the measurements and the verdict are
+stored, and JavaScript is never uploaded regardless of the upload setting.
 
 ### 4. Heuristics — *complete*
 

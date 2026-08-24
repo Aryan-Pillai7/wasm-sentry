@@ -28,11 +28,11 @@ import type {
   RiskLevel,
   WasmApi,
 } from "@wasm-sentry/core";
-import type { RuntimeReport } from "@wasm-sentry/core";
+import type { JsArtifactAnalysis, RuntimeReport } from "@wasm-sentry/core";
 import type { CaptureContext } from "../shared/protocol";
 
 const DB_NAME = "wasm-sentry";
-const DB_VERSION = 4;
+const DB_VERSION = 5;
 
 /** Upper bounds on locally retained artifact bytes. */
 const MAX_STORED_ARTIFACTS = 300;
@@ -112,6 +112,37 @@ export interface FingerprintRow {
   seenAt: number;
 }
 
+/**
+ * An analysed piece of JavaScript.
+ *
+ * Note what is absent: the source. A script on an authenticated page can carry
+ * far more of somebody's private business than a compiled module does, so what
+ * persists is the measurements and the verdict -- enough to explain a finding,
+ * and not enough to reconstruct the code. This is the reason there is no
+ * `blobs` equivalent here.
+ */
+export interface ScriptRow {
+  hash: string;
+  tabId: number;
+  pageUrl: string;
+  origin: "inline" | "injected-inline" | "Function";
+  byteLength: number;
+  analysis: JsArtifactAnalysis;
+  seenAt: number;
+}
+
+/** An external script, as metadata. Its contents are never read. */
+export interface ExternalScriptRow {
+  /** `${tabId}|${url}`, so one row per script per tab. */
+  key: string;
+  tabId: number;
+  url: string;
+  thirdParty: boolean;
+  hasIntegrity: boolean;
+  injected: boolean;
+  seenAt: number;
+}
+
 export type EventKind = "captured" | "analysed" | "skipped" | "alerted" | "cleared";
 
 /** One line in the activity feed. */
@@ -161,6 +192,12 @@ export function openDB(): Promise<IDBDatabase> {
       const runtime = db.createObjectStore("runtime", { keyPath: "contextId" });
       runtime.createIndex("by_tab", "tabId");
       db.createObjectStore("fingerprints", { keyPath: "fingerprint" });
+
+      // JavaScript: measurements and verdicts, never source.
+      const scripts = db.createObjectStore("scripts", { keyPath: "hash" });
+      scripts.createIndex("by_tab", "tabId");
+      const external = db.createObjectStore("externalScripts", { keyPath: "key" });
+      external.createIndex("by_tab", "tabId");
 
       // Verdicts are keyed by artifact hash too, so a module already analysed
       // on another site is never analysed twice.
@@ -331,7 +368,7 @@ export async function hasAnalysis(hash: string): Promise<boolean> {
 
 /** Drop sightings, notes and measurements belonging to a tab that has gone away. */
 export async function clearTab(tabId: number): Promise<void> {
-  for (const name of ["sightings", "notes", "runtime"] as const) {
+  for (const name of ["sightings", "notes", "runtime", "scripts", "externalScripts"] as const) {
     await withStore(name, "readwrite", async (store) => {
       const keys = await promisify<IDBValidKey[]>(store.index("by_tab").getAllKeys(tabId));
       await Promise.all(keys.map((key) => promisify(store.delete(key))));
@@ -378,6 +415,33 @@ export async function getAllRuntime(): Promise<RuntimeRow[]> {
   return withStore("runtime", "readonly", (store) => promisify<RuntimeRow[]>(store.getAll()));
 }
 
+export async function saveScript(row: ScriptRow): Promise<void> {
+  await withStore("scripts", "readwrite", (store) => promisify(store.put(row)));
+}
+
+export async function getScriptsByTab(tabId: number): Promise<ScriptRow[]> {
+  return withStore("scripts", "readonly", (store) =>
+    promisify<ScriptRow[]>(store.index("by_tab").getAll(tabId)),
+  );
+}
+
+export async function hasScript(hash: string): Promise<boolean> {
+  return withStore("scripts", "readonly", async (store) => {
+    const row = await promisify<ScriptRow | undefined>(store.get(hash));
+    return row !== undefined;
+  });
+}
+
+export async function saveExternalScript(row: ExternalScriptRow): Promise<void> {
+  await withStore("externalScripts", "readwrite", (store) => promisify(store.put(row)));
+}
+
+export async function getExternalScriptsByTab(tabId: number): Promise<ExternalScriptRow[]> {
+  return withStore("externalScripts", "readonly", (store) =>
+    promisify<ExternalScriptRow[]>(store.index("by_tab").getAll(tabId)),
+  );
+}
+
 /** Wipe everything. Exposed in the dashboard so the user can reset state. */
 export async function clearAll(): Promise<void> {
   const names = [
@@ -389,6 +453,8 @@ export async function clearAll(): Promise<void> {
     "results",
     "runtime",
     "fingerprints",
+    "scripts",
+    "externalScripts",
   ] as const;
   await withStores(names, "readwrite", async (stores) => {
     await Promise.all(names.map((name) => promisify(stores[name]!.clear())));

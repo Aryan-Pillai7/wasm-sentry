@@ -641,12 +641,14 @@ worker is instrumented from the same prelude blob.
 
 ### 6.5 Counts
 
-207 tests. 85 in `core` (sniffing, hashing, base64, parser, decoder, CFG,
-features, heuristics, scoring, runtime accumulation and rules, the feature
-vectoriser, the trainer, inference and the evaluation harness), 109 in
+233 tests. 99 in `core` (sniffing, hashing, base64, parser, decoder, CFG,
+features, heuristics, scoring, runtime accumulation and rules, the JavaScript
+scanner calibrated against real bundles, the feature vectoriser, the trainer,
+inference and the evaluation harness), 121 in
 `extension` (capture hooks, worker instrumentation and base compensation, the
 built worker prelude, the runtime monitor and socket counting, opt-in upload,
-model loading, storage against a real IndexedDB, popup message handling, alert policy,
+model loading, script observation and its privacy boundary, storage against a
+real IndexedDB, popup message handling, alert policy,
 formatting, and an end-to-end run through the real service worker), and 13 in
 `backend` (the real routes over a real socket against an in-memory database,
 plus the queue's failure paths against a stub store).
@@ -748,24 +750,106 @@ The CLI also warns below fifty modules, and prints, every single run:
 
 ---
 
+## 7a. JavaScript analysis, and the consent design that blocked it
+
+### 7a.1 Why this waited
+
+The synopsis names JavaScript bundles alongside WebAssembly, and this was
+listed as "needs its own consent design first" for four phases. That was not
+procrastination: **a page's scripts can carry far more of somebody's private
+business than a compiled module does.** An internal build, an authenticated
+application, a session token inlined into a bootstrap script. §3.1 already
+established that shipping modules off by default would be an exfiltration
+channel wearing a security tool's badge; scripts make the same argument louder.
+
+So the design came first, and it is four rules:
+
+1. **Off by default** — the only capture path that is. Every other one sees
+   things the page has already published to itself.
+2. **Nothing is re-fetched.** External scripts are never read. Their origin,
+   third-partyness and Subresource Integrity are facts already in the markup,
+   and they are what the supply-chain rule needs.
+3. **What is read is only what the page assembled itself** — inline source and
+   `new Function` bodies. That code never crossed the network, so nothing else
+   could have seen it, and it is where an obfuscated loader lives.
+4. **Source is measured and discarded.** Measurements and verdicts are stored;
+   the text is not, and JavaScript is never uploaded whatever the upload setting
+   says. A test asserts a secret in a script's source cannot be found anywhere
+   in the resulting report.
+
+### 7a.2 `eval` is deliberately not hooked
+
+It is the obvious thing to wrap and it cannot be wrapped honestly. A *direct*
+`eval(...)` evaluates in its caller's scope, and that depends on the callee
+resolving to the intrinsic — so replacing the global silently turns every direct
+call in the page into an indirect one evaluating in global scope. That is a
+change to what the page observes, which §2.2 forbids.
+
+Almost nothing is lost. These rules are lexical: `eval(atob("..."))` is visible
+in the source of the script containing it, and inline source is read in full.
+The remaining gap is an eval inside an external script, whose contents are
+deliberately never read anyway.
+
+`new Function` *is* wrapped, because a Proxy over it changes no semantics and
+its body can be built from a decoded string that appears nowhere in the source.
+
+### 7a.3 The calibration problem is inverted
+
+On the WebAssembly side almost nothing looks like a mining kernel. Here almost
+everything looks obfuscated: every production bundle is minified to one enormous
+line of one-character identifiers and opaque literals. **A rule that flags
+"minified" flags the entire web.**
+
+Measuring real bundles found the one measurement that separates them:
+
+| Source | Escape density |
+|---|---|
+| `react-dom.production.js` | 0.000% |
+| `typescript.js` (8.9 MB) | 0.006% |
+| `esquery.esm.min.js` | 0.131% |
+| `ajv.min.js` (119,360-char line) | 0.928% |
+| hex-escaped payload | **54.8%** |
+| packed payload | **98.9%** |
+
+A minifier has no reason to escape anything; an obfuscator escapes nearly
+everything, because the point is that the source should not be readable. Line
+length and entropy both fail here — `ajv.min.js` has the longest line measured
+and is entirely legitimate, and every sample sits between 4.7 and 5.4 bits of
+entropy.
+
+The threshold sits at 5%, in the middle of a two-order-of-magnitude gap. The
+corpus lives in `core/test/js.test.ts` as assertions, so changing a threshold
+breaks a test rather than invalidating a table.
+
+### 7a.4 A regex found the wrong kind of limit
+
+The first literal scanner was the obvious regular expression,
+`(["'`])((?:\.|(?!)[^\
+]){16,})`. It works until it meets a
+multi-megabyte string literal -- an inlined asset, which is not exotic -- at
+which point V8's backtracking stack overflows and the entire analysis is lost.
+It is replaced by a linear scan: no backtracking, no recursion, fixed cost per
+character. A test pins a 5 MB literal.
+
+---
+
 ## 8. Things deliberately not done yet
 
 | Not done | Why |
 |---|---|
 | A shipped model | The pipeline is built and tested; the labelled corpus is not obtained. A model trained on anything less would produce confident numbers with nothing behind them. |
-| JS bundle analysis | Needs its own consent story: shipping page scripts anywhere is a bigger privacy question than Wasm modules. |
 | Element/data segment contents | Only needed for indirect-call resolution; segment *counts* are already a useful structural feature. |
 
 ---
 
 ## 9. At a glance
 
-- **7-stage pipeline**, all 5 phases built; the classifier ships no model, because no labelled corpus exists to train one honestly
+- **7-stage pipeline**, all 5 phases built, plus JavaScript and supply-chain analysis; the classifier ships no model, because no labelled corpus exists to train one honestly
 - **0 runtime dependencies** in the analysis core
 - **643 KB / 1,879 functions parsed in 165 ms**; 2.4 MB / 975k instructions in 399 ms
 - **0 warnings, 0 undecodable function bodies** on both real-world modules
 - **~38 KB** added to the extension bundle by the whole analysis engine
-- **207 tests**, all green — 85 in `core`, 109 in `extension`, 13 in `backend`
+- **233 tests**, all green — 99 in `core`, 121 in `extension`, 13 in `backend`
 - **12 detection rules**, every one citing evidence, 5 citing literature
 - Calibration: benign real-world modules score **6** and **21** out of 100; the
   full mining shape scores **63**
