@@ -96,10 +96,40 @@ corroborating infrastructure. See [`detection.md`](detection.md).
 
 This is the explainable baseline, and the bar the classifier has to beat.
 
-### 5. Runtime monitoring — *Phase 4*
+### 5. Runtime monitoring — *complete*
 
-API call tracing and CPU sampling from the page world, correlated back to the
-module that caused them.
+Static analysis took the detector as far as static analysis goes, and
+calibration established exactly where that is: a legitimate image codec contains
+a loop statically indistinguishable from a hashing kernel. What separates them
+is that one runs flat out for minutes.
+
+Four things are measured, from inside the page's own world and inside every
+instrumented worker:
+
+- **Time inside a module's exports.** The instance's exports namespace is
+  reproduced with each function wrapped in a timer. Timing switches itself off
+  for a module called tens of thousands of times with a mean in the
+  microseconds -- a library being used, not a kernel being run -- after which
+  the accumulated total is reported as a floor and every finding built on it
+  says so.
+- **Scheduler starvation.** A timer asked for every second, and how late it
+  actually arrives. A context executing a tight loop cannot run its own timers
+  on time, and unlike a CPU reading this needs no permission.
+- **Worker fan-out.** How many separate contexts are executing the same module,
+  judged against `hardwareConcurrency` rather than a fixed number.
+- **Socket activity.** Opens and message counts only -- never URLs, never
+  payloads. A mining pool hands out work and takes back shares this way.
+
+Samples are keyed by the page-side fingerprint, because the page cannot compute
+a hash (`crypto.subtle` is undefined over plain http); the service worker joins
+them back to the content hash from the captures it already accepted. Reports are
+cumulative per context, so a context that dies takes nothing with it and a
+duplicate cannot double-count.
+
+When the evidence moves, the module is re-analysed from its stored bytes and
+re-scored through the same rule pass -- not patched -- because
+`mining-runtime-corroborated` has to see the static kernel and the measured
+execution together.
 
 ### 6. AI classification — *Phase 5*
 
@@ -108,24 +138,32 @@ purpose: without the feature extractor and a labelled corpus it has nothing to
 learn from, and without the heuristic baseline there is nothing to compare it
 against.
 
-### 7. Risk aggregation and Privacy Scorecard — *complete for static findings*
+### 7. Risk aggregation and Privacy Scorecard — *complete*
 
 Findings are combined into a banded score that saturates, so corroborated
 evidence outranks accumulated hints. The score is never shown alone: it ships
 with the findings that produced it and with a coverage figure, because a verdict
-a user cannot interrogate is a verdict they cannot act on. Runtime findings join
-the same aggregation in Phase 4.
+a user cannot interrogate is a verdict they cannot act on. Runtime findings go
+through the same aggregation, which needed no redesign to take them: it was
+always a function of an arbitrary finding list.
 
 ## Storage
 
-**Extension (IndexedDB).** `artifacts` keyed by content hash holds metadata
-only, with the bytes in a separate `blobs` store so that listing every module
-ever seen never deserialises megabytes of WebAssembly; `sightings` records every
-time a hash was seen and where; `notes` covers artifacts observed but not
-analysed, with the reason; `results` holds verdicts; `events` is a capped
-append-only activity log across all tabs, which is what lets the dashboard show
-the extension working rather than leaving the user to infer it. Retention is
-bounded by a least-recently-seen eviction pass.
+**Extension (IndexedDB, schema v4).** `artifacts` keyed by content hash holds
+metadata only, with the bytes in a separate `blobs` store so that listing every
+module ever seen never deserialises megabytes of WebAssembly; `sightings`
+records every time a hash was seen and where; `notes` covers artifacts observed
+but not analysed, with the reason; `results` holds verdicts; `events` is a
+capped append-only activity log across all tabs, which is what lets the
+dashboard show the extension working rather than leaving the user to infer it;
+`runtime` holds the latest report from each reporting context, and
+`fingerprints` maps the page-side fingerprint those reports are keyed by to the
+content hash everything else is keyed by. Retention is bounded by a
+least-recently-seen eviction pass.
+
+Keeping the bytes is what makes re-scoring possible: runtime evidence arrives
+tens of seconds after the capture, and re-running the rules needs the module
+again.
 
 **Backend (SQLite, Phase 2).** Sessions, jobs and results, per
 `backend/src/db/schema.sql`.
@@ -135,6 +173,14 @@ bounded by a least-recently-seen eviction pass.
 **Never change what the page observes.** Hooks call through with the arguments
 they were given, swallow their own exceptions, and defer capture work off the
 critical path.
+
+There are exactly two deliberate exceptions, both of which buy something static
+analysis cannot: an instrumented worker starts from a shim rather than its own
+script, and an instrumented module's exports are wrapped in timers. Both restore
+everything they can -- base URLs, message ordering, export names, arity, key
+order, frozen null-prototype namespaces -- both fall back to the untouched path
+on any failure, and both have an off switch, which nothing else in the capture
+layer needs.
 
 **Content hash is identity.** URLs are attacker-controlled, cache-busted and
 sometimes single-use. The hash is none of those things.

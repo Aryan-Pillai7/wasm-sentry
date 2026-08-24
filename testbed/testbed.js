@@ -127,6 +127,33 @@ const RUNS = {
       setTimeout(resolve, 3000);
     });
   },
+
+  // What Phase 4 is for. Several workers running a real kernel for long enough
+  // that "sustained" means something: the static verdict on this module is
+  // ambiguous by design, and watching it run is what settles it.
+  async grind() {
+    const workers = Math.max(2, Math.ceil((navigator.hardwareConcurrency || 4) / 2));
+    say(`10. starting ${workers} workers grinding for 25s — watch the popup`, "warn");
+
+    const running = Array.from({ length: workers }, () => {
+      const worker = new Worker("worker-grind.js");
+      return new Promise((resolve) => {
+        worker.onmessage = (event) => {
+          worker.terminate();
+          resolve(event.data);
+        };
+        worker.postMessage({ seconds: 25 });
+        setTimeout(() => {
+          worker.terminate();
+          resolve("timed out");
+        }, 40000);
+      });
+    });
+
+    const replies = await Promise.all(running);
+    say(`10. ${replies.length} workers finished: ${replies[0]}`, "ok");
+    say("    the module should now be scored on what it did, not only its shape", "ok");
+  },
 };
 
 document.addEventListener("click", async (event) => {

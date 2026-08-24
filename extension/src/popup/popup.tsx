@@ -1,6 +1,12 @@
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import type { AnalysisSummary, Finding, PageScorecard, RiskAssessment } from "@wasm-sentry/core";
+import type {
+  AnalysisSummary,
+  Finding,
+  PageScorecard,
+  RiskAssessment,
+  RuntimeFeatures,
+} from "@wasm-sentry/core";
 import type { TabReport, TabArtifactView } from "../shared/protocol";
 import { loadReport } from "./load-report";
 import "./popup.css";
@@ -128,6 +134,34 @@ function StaticFacts({ summary }: { summary: AnalysisSummary }): React.JSX.Eleme
   );
 }
 
+/**
+ * What the module has actually been seen doing.
+ *
+ * Shown next to the static facts rather than folded into them, because the two
+ * answer different questions and a reader needs to know which is which: the
+ * static numbers describe what the module *is*, these describe what it *did*.
+ */
+function RuntimeFacts({ runtime }: { runtime: RuntimeFeatures }): React.JSX.Element {
+  const seconds = (ms: number): string => `${(ms / 1000).toFixed(ms >= 10_000 ? 0 : 1)}s`;
+
+  return (
+    <div className="facts">
+      <dl>
+        <div><dt>watched</dt><dd>{seconds(runtime.observedMs)}</dd></div>
+        <div><dt>executing</dt><dd>{seconds(runtime.wasmTimeMs)}</dd></div>
+        <div><dt>cores</dt><dd>{runtime.cpuShare.toFixed(2)}</dd></div>
+        <div><dt>contexts</dt><dd>{runtime.contextCount}</dd></div>
+      </dl>
+      {runtime.timingStopped && (
+        <div className="caveat">
+          timing stopped for this module — it is called too often to measure each call, so the
+          figure above is a floor
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ArtifactCard({ artifact }: { artifact: TabArtifactView }): React.JSX.Element {
   const label = artifact.url.startsWith("inline:")
     ? `compiled from memory (${artifact.api})`
@@ -159,6 +193,7 @@ function ArtifactCard({ artifact }: { artifact: TabArtifactView }): React.JSX.El
       </div>
 
       {analysis?.risk && <Findings risk={analysis.risk} />}
+      {analysis?.runtime && <RuntimeFacts runtime={analysis.runtime} />}
       {analysis?.summary && <StaticFacts summary={analysis.summary} />}
 
       {analysis?.watHeader && (

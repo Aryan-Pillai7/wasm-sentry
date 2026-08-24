@@ -9,9 +9,10 @@ never touch the network — disassembles it, and explains what it does in terms 
 person can act on. It is built as a Chrome MV3 extension with a shared analysis
 engine that runs unchanged in the browser, in Node, and in tests.
 
-> Status: Phase 3 of 5. Capture, disassembly, static analysis, heuristic
-> detection and the Privacy Scorecard are complete and tested; runtime
-> monitoring and the ML classifier are next. See
+> Status: Phase 4 of 5. Capture, disassembly, static analysis, heuristic
+> detection, the Privacy Scorecard and runtime behavioural monitoring are
+> complete and tested; the ML classifier is next, and is blocked on a labelled
+> corpus rather than on code. See
 > [`docs/architecture.md`](docs/architecture.md) for the full pipeline.
 
 ## Layout
@@ -87,6 +88,26 @@ the numbers that triggered it — and combined into a banded Privacy Scorecard.
 Thresholds are calibrated against real compiled output rather than guessed; see
 [`docs/detection.md`](docs/detection.md), including the false positive that
 reshaped the design.
+
+## Watching it run
+
+Static analysis has a hard limit, and this project measured exactly where it is:
+a legitimate image codec contains a loop that is *statically indistinguishable*
+from a hashing kernel. Compression, checksums and image filters all take that
+shape. What separates them is that one of them runs flat out for minutes.
+
+So modules are also watched: time spent inside their exported functions, how
+late the context's own timers arrive, how many contexts are running the same
+module, and how busy any socket is. A module whose static shape is ambiguous and
+which then runs at four core-equivalents for half a minute is no longer
+ambiguous. Sustained execution on its own never is enough — a video codec
+saturates a core honestly — so escalation still requires the static kernel too.
+
+Timing switches itself off for modules called in a hot loop, where measuring
+each call would cost more than the call; the total it reports then says out loud
+that it is a floor. The runtime thresholds are **not** calibrated against real
+mining samples, and [`docs/detection.md`](docs/detection.md) says so: the
+mechanism is measured, the lines drawn on it are conservative.
 
 You can point the parser at any module from the command line:
 

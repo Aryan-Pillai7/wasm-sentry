@@ -256,6 +256,7 @@ const CAPTURE: HookCapture = {
   url: "https://app.test/m.wasm",
   size: 8,
   bytes: Uint8Array.of(0, 97, 115, 109, 1, 0, 0, 0),
+  fingerprint: "8:abc",
 };
 
 test("captures from inside a worker reach us and never reach the page", () => {

@@ -67,6 +67,7 @@
 
       const captures = [];
       const leaks = [];
+      const runtime = [];
 
       window.addEventListener("message", (event) => {
         if (event.source !== window) return;
@@ -74,7 +75,19 @@
         if (!data || typeof data !== "object") return;
 
         if (data.channel === "wasm-sentry:capture:v1" && data.bytes) {
-          captures.push({ context: data.context, api: data.api, size: data.bytes.length, url: data.url });
+          captures.push({
+            context: data.context,
+            api: data.api,
+            size: data.bytes.length,
+            url: data.url,
+            fingerprint: data.fingerprint,
+          });
+        }
+        // Runtime reports travel on the same channel, keyed by the page-side
+        // fingerprint, because the page cannot compute the hash the service
+        // worker keys everything else by.
+        if (data.channel === "wasm-sentry:capture:v1" && data.runtime) {
+          runtime.push({ contextId: data.contextId, report: data.runtime });
         }
         // The worker channel must be intercepted and stopped before any page
         // listener runs. One of these reaching here is a failure of the whole
@@ -85,8 +98,11 @@
       const IMPORTS = { env: { log: () => {} }, pool: { websocket_send: () => {} } };
       const bytesOf = async (name) => (await fetch(name, { cache: "no-store" })).arrayBuffer();
 
+      /** How long the grinding workers run. Long enough to mean "sustained". */
+      const GRIND_SECONDS = 12;
+
       /** Run a worker, resolve with its reply, and never hang the page on it. */
-      function talkTo(url, options, timeoutMs) {
+      function talkTo(url, options, timeoutMs, message = "go") {
         return new Promise((resolve) => {
           let worker;
           try {
@@ -108,7 +124,7 @@
           };
           worker.onmessage = (event) => finish(event.data);
           worker.onerror = (event) => finish(`worker error: ${event.message}`);
-          worker.postMessage("go");
+          worker.postMessage(message);
           setTimeout(() => finish("no reply within the timeout"), timeoutMs);
         });
       }
@@ -160,6 +176,42 @@
               `${fromWorkers.length} worker capture(s)`);
         check("no internal message reached a page listener", leaks.length === 0,
               leaks.length ? `${leaks.length} leaked` : "");
+
+        // Runtime monitoring: a real kernel, run for real time, in workers.
+        const grinders = Math.max(2, Math.ceil((navigator.hardwareConcurrency || 4) / 2));
+        say(`grinding in ${grinders} workers for ${GRIND_SECONDS}s...`, "note");
+        await Promise.all(
+          Array.from({ length: grinders }, () =>
+            talkTo("worker-grind.js", undefined, (GRIND_SECONDS + 15) * 1000, {
+              seconds: GRIND_SECONDS,
+            }),
+          ),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+
+        const grindFingerprints = new Set(
+          captures.filter((c) => c.url.endsWith("sustained-kernel.wasm")).map((c) => c.fingerprint),
+        );
+        const grindReports = runtime.filter((entry) =>
+          entry.report.modules.some((m) => grindFingerprints.has(m.fingerprint)),
+        );
+        const busiest = Math.max(
+          0,
+          ...grindReports.flatMap((entry) =>
+            entry.report.modules
+              .filter((m) => grindFingerprints.has(m.fingerprint))
+              .map((m) => m.wasmTimeMs),
+          ),
+        );
+
+        check("runtime reports arrived from the workers", grindReports.length > 0,
+              `${runtime.length} report(s) in total`);
+        check("each grinding worker reported under its own identity",
+              new Set(grindReports.map((entry) => entry.contextId)).size >= grinders,
+              `${new Set(grindReports.map((e) => e.contextId)).size} of ${grinders}`);
+        check("measured execution time reflects a kernel that really ran",
+              busiest > GRIND_SECONDS * 500,
+              `busiest worker spent ${(busiest / 1000).toFixed(1)}s executing`);
 
         say("");
         say(`captures (${captures.length}):`, "note");

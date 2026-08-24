@@ -4,6 +4,7 @@ import type {
   CaptureSource,
   PageScorecard,
   RiskLevel,
+  RuntimeReport,
   WasmApi,
 } from "@wasm-sentry/core";
 
@@ -59,6 +60,14 @@ export interface CaptureRequest {
   /** Artifact bytes, base64 encoded -- see `@wasm-sentry/core` base64 notes. */
   bytesB64: string;
   context?: CaptureContext;
+  /**
+   * The page-side fingerprint of these bytes.
+   *
+   * Not trusted for anything -- the service worker hashes the bytes itself --
+   * but recorded, because runtime samples can only be keyed by something the
+   * page can compute, and over plain http that cannot be a hash.
+   */
+  fingerprint?: string;
 }
 
 /** Reported when an artifact was seen but deliberately not captured. */
@@ -70,6 +79,22 @@ export interface SkipRequest {
   size: number;
   reason: "too-large" | "rate-limited" | "read-failed";
   context?: CaptureContext;
+}
+
+/**
+ * A context's periodic account of how the modules in it are behaving.
+ *
+ * Cumulative rather than incremental: a context that is killed between reports
+ * -- a terminated worker, a navigation -- would otherwise take its last delta
+ * with it, and a duplicate would double-count. The service worker keeps the
+ * latest report per context and folds them together.
+ */
+export interface RuntimeRequest {
+  type: "wasm-sentry:runtime";
+  /** Stable for the life of the reporting context, so reports supersede. */
+  contextId: string;
+  pageUrl: string;
+  report: RuntimeReport;
 }
 
 /** Popup asking the service worker what it has seen in a given tab. */
@@ -102,6 +127,7 @@ export interface ClearAllRequest {
 export type ExtensionMessage =
   | CaptureRequest
   | SkipRequest
+  | RuntimeRequest
   | TabReportRequest
   | PingRequest
   | ActivityRequest

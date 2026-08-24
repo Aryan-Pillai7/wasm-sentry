@@ -9,7 +9,12 @@
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { benignModule, minerLikeModule, syntheticMinerModule } from "../test/fixtures.js";
+import {
+  benignModule,
+  minerLikeModule,
+  sustainedKernelModule,
+  syntheticMinerModule,
+} from "../test/fixtures.js";
 
 const outDir = process.argv[2] ?? "fixtures-out";
 mkdirSync(outDir, { recursive: true });
@@ -18,6 +23,7 @@ const files = {
   "miner.wasm": syntheticMinerModule(),
   "miner-no-threads.wasm": syntheticMinerModule({ shared: false }),
   "kernel-only.wasm": minerLikeModule(),
+  "sustained-kernel.wasm": sustainedKernelModule(),
   "benign.wasm": benignModule(),
 };
 

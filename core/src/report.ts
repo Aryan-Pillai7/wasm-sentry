@@ -9,6 +9,7 @@
 import type { StaticAnalysisResult } from "./analysis.js";
 import type { KernelCandidate } from "./wasm/features.js";
 import { evaluateHeuristics } from "./heuristics.js";
+import type { RuntimeFeatures } from "./runtime.js";
 import { assessRisk, coverageOf } from "./scoring.js";
 import type { RiskAssessment } from "./scoring.js";
 
@@ -51,17 +52,34 @@ export interface ArtifactAnalysis {
   /** The module's declared surface as WAT -- what a reviewer reads first. */
   watHeader?: string;
   warnings?: string[];
+  /**
+   * What the module was observed doing, once it has been watched long enough.
+   * Absent until then, which is the usual case: a verdict is produced the
+   * moment a module is captured, seconds before it has behaved at all.
+   */
+  runtime?: RuntimeFeatures;
 }
 
-/** Reduce a full analysis to the record that gets stored. */
-export function summarise(hash: string, result: StaticAnalysisResult): ArtifactAnalysis {
+/**
+ * Reduce a full analysis to the record that gets stored.
+ *
+ * Runtime evidence, when there is any, is folded into the same rule pass rather
+ * than bolted on afterwards. Re-running the whole assessment is what lets
+ * `mining-runtime-corroborated` see the static kernel and the measured
+ * execution together, which is the finding this entire phase exists to produce.
+ */
+export function summarise(
+  hash: string,
+  result: StaticAnalysisResult,
+  runtime?: RuntimeFeatures,
+): ArtifactAnalysis {
   const analyzedAt = Date.now();
   if (!result.ok) {
     return { hash, analyzedAt, elapsedMs: result.elapsedMs, ok: false, reason: result.reason };
   }
 
   const f = result.features;
-  const findings = evaluateHeuristics(f);
+  const findings = evaluateHeuristics(f, runtime);
   const risk = assessRisk(findings, coverageOf(f));
 
   return {
@@ -94,5 +112,6 @@ export function summarise(hash: string, result: StaticAnalysisResult): ArtifactA
     },
     watHeader: result.watHeader,
     warnings: result.warnings.slice(0, 10),
+    ...(runtime !== undefined ? { runtime } : {}),
   };
 }

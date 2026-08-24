@@ -37,6 +37,36 @@ Twelve weak hints cannot add up to an accusation.
 | `stripped-binary` | 4 | No name section. Normal for production builds; only meaningful as a multiplier. |
 | `incomplete-coverage` | 0 | Functions that could not be decoded or were skipped for budget. Contributes no score — it qualifies the ones that do. |
 
+## Runtime rules
+
+Static rules score a module the moment it is captured. These score it again once
+it has been watched long enough for its behaviour to mean something, through the
+same aggregation and the same evidence requirement.
+
+| Rule | Weight | What it measures |
+|---|---|---|
+| `mining-runtime-corroborated` | 45 | A static compute kernel **and** sustained execution: the finding this phase exists for. Escalated further by fan-out, timer starvation or socket traffic. |
+| `sustained-execution` | 28 | At least 0.5 core-equivalents of execution over at least 20 seconds of observation. |
+| `worker-fan-out` | 20 | The same module executing in at least half the machine's cores' worth of contexts. |
+| `persistent-socket-traffic` | 12 | Ten or more socket messages alongside at least five seconds of execution. |
+| `runtime-not-yet-observed` | 0 | Watched for under 20 seconds. Contributes no score — it says the runtime rules have not had long enough to mean anything. |
+
+**Twenty seconds, not two.** A page is legitimately busy for a few seconds all
+the time: starting a game, decoding an image, recalculating a sheet. Sustained
+execution is a different claim from a spike and the threshold is what makes it
+one.
+
+**Core-equivalents, not a percentage.** Each context's share is capped at 1 and
+the capped shares are summed, so a module saturating four workers reports about
+4.0. Averaging would hide fan-out behind an idle main thread, and fan-out is
+exactly the shape being looked for.
+
+**Sustained execution alone cannot reach the high band.** A video codec, a game
+and a physics engine all saturate a core honestly. `sustained-execution` is
+weighted so that it cannot on its own accuse anything; escalation requires the
+static kernel too, which is the same corroboration-not-accumulation rule the
+static side already followed.
+
 ## Scoring
 
 Raw score is `Σ (weight × confidence)`, then saturated:
@@ -76,6 +106,27 @@ npm run inspect -w @wasm-sentry/core -- path/to/module.wasm
 npm run calibrate -w @wasm-sentry/core -- path/to/module.wasm
 ```
 
+### What is and is not calibrated at runtime
+
+The static thresholds in this document were measured against real compiled
+output. **The runtime thresholds were not calibrated against real mining
+samples**, because this project still has no labelled corpus, and saying
+otherwise would be exactly the unsupported number the literature review
+criticises.
+
+What they are is bounded by measurement of the mechanism. Driving the built
+extension in headless Chrome against a fixture that really spins:
+
+| Measurement | Observed |
+|---|---|
+| Grinding workers, one per two cores | 8 of 8 reported, each under its own context identity |
+| Execution measured in the busiest worker | 12.0s inside a 12.0s window — a full core |
+| Instrumentation overhead on a hot-loop module | timing self-disables after 20,000 calls averaging under 0.05 ms |
+
+So the pipeline measures what it claims to measure, to the resolution the rules
+need. Whether 0.5 core-equivalents over 20 seconds is the right line for real
+cryptojacking in the wild is an open question, and it is written here as one.
+
 ### What calibration changed
 
 The first version of the kernel detector ranked candidate loops by
@@ -110,8 +161,11 @@ sustained CPU is the signal that settles the question, and it arrives in Phase 4
   samples) that this project does not yet have. The synthetic miner fixture in
   `core/test/fixtures.ts` proves the rules fire on the shape they target; it
   does not prove a detection rate.
-- **Static analysis only.** A module that fetches its kernel at runtime, or
-  gates it behind a delay, looks benign here until runtime monitoring lands.
+- **Runtime thresholds are not corpus-calibrated.** See above. The mechanism is
+  measured; the lines drawn on it are conservative rather than fitted.
+- **A module gated behind a long delay is still missed.** Runtime monitoring
+  watches from page load; a kernel that waits ten minutes before starting is
+  observed only if the tab is still open when it does.
 - **A worker terminated mid-capture loses that capture.** A streaming capture is
   posted once the cloned response has been read, which can land after the module
   has finished instantiating — so a page that calls `terminate()` the instant its

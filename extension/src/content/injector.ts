@@ -27,7 +27,10 @@
  */
 import { installHooks } from "./capture-hooks";
 import type { HookCapture, HookSkip, WasmNamespace } from "./capture-hooks";
+import { createMonitor } from "./runtime-monitor";
+import { installSocketHooks } from "./socket-hooks";
 import { installWorkerHook } from "./worker-hooks";
+import type { RuntimeReport } from "@wasm-sentry/core";
 
 /** Bundled source of `worker-prelude.ts`, inlined at build time. */
 declare const __WASM_SENTRY_WORKER_PRELUDE__: string;
@@ -40,16 +43,32 @@ const INSTALLED = "__wasmSentryInstalled";
 /** Where a capture was intercepted, so the report can say which. */
 type CaptureContext = "page" | "worker";
 
-function emit(message: HookCapture | HookSkip, context: CaptureContext = "page"): void {
+function post(payload: Record<string, unknown>): void {
   try {
     // Target origin `*` rather than `location.origin`: sandboxed and
     // `about:blank` frames have an opaque origin that would reject the message.
     // The delivery target is this same window either way, and the page already
     // owns every byte being forwarded, so this discloses nothing new.
-    window.postMessage({ channel: CHANNEL, pageUrl: location.href, context, ...message }, "*");
+    window.postMessage({ channel: CHANNEL, pageUrl: location.href, ...payload }, "*");
   } catch {
     /* A page that has broken postMessage is not worth crashing over. */
   }
+}
+
+function emit(message: HookCapture | HookSkip, context: CaptureContext = "page"): void {
+  post({ context, ...message });
+}
+
+/**
+ * One identity per document, so the service worker can tell a fresh report from
+ * a repeat of one it already folded in. It is deliberately not the page URL: a
+ * single-page application changes that without ever reloading, and the
+ * measurements would then be attributed to two different contexts.
+ */
+const CONTEXT_ID = `page:${Math.random().toString(36).slice(2)}`;
+
+function sendRuntime(report: RuntimeReport): void {
+  post({ runtime: report, contextId: CONTEXT_ID });
 }
 
 const guard = globalThis as unknown as { [INSTALLED]?: boolean };
@@ -58,17 +77,37 @@ const wasm = (globalThis as { WebAssembly?: WasmNamespace }).WebAssembly;
 if (!guard[INSTALLED]) {
   guard[INSTALLED] = true;
 
+  // Created before the hooks so the very first module a page compiles is
+  // already being timed. The monitor itself costs one timer per second.
+  const monitor = createMonitor({
+    context: "page",
+    now: () => performance.now(),
+    hardwareConcurrency: navigator.hardwareConcurrency ?? 0,
+    report: sendRuntime,
+    every: (task, ms) => {
+      setInterval(task, ms);
+    },
+  });
+
+  try {
+    installSocketHooks(globalThis as never, monitor);
+  } catch {
+    /* Socket counting is corroboration; losing it costs one signal. */
+  }
+
   if (wasm) {
     installHooks({
       wasm,
       emit,
       maxBytes: MAX_ARTIFACT_BYTES,
       maxPerMinute: MAX_CAPTURES_PER_MINUTE,
+      instrument: (fingerprint, exports) => monitor.instrument(fingerprint, exports),
     });
   }
 
   // Installed independently of the WebAssembly hooks: a page that deleted
   // `WebAssembly` from its own world can still start a worker that uses it.
+  let workerHook: { disable: () => void } | undefined;
   try {
     const scope = globalThis as { Worker?: typeof Worker };
     if (typeof scope.Worker === "function") {
@@ -77,23 +116,28 @@ if (!guard[INSTALLED]) {
         prelude: { source: __WASM_SENTRY_WORKER_PRELUDE__ },
         pageUrl: location.href,
         emit: (message) => emit(message, "worker"),
+        onRuntimeReport: (report, contextId) => post({ runtime: report, contextId }),
+        onWorker: () => monitor.noteWorker(),
         createObjectURL: (blob) => URL.createObjectURL(blob),
         revokeObjectURL: (url) => URL.revokeObjectURL(url),
       });
       scope.Worker = hook.Worker;
 
-      // The setting lives in extension storage, which is async, while this hook
-      // has to exist before the page's first line runs. Instrumentation is
-      // therefore on by default and switched off a moment later if the user has
-      // turned it off, taking full effect from the next navigation.
-      window.addEventListener("message", (event: MessageEvent) => {
-        if (event.source !== window) return;
-        const data = event.data as { channel?: unknown; command?: unknown } | null;
-        if (data?.channel !== CHANNEL || data.command !== "disable-worker-instrumentation") return;
-        hook.disable();
-      });
+      workerHook = hook;
     }
   } catch {
     /* Losing worker coverage is a coverage loss, never a broken page. */
   }
+
+  // Both settings live in extension storage, which is async, while these hooks
+  // have to exist before the page's first line runs. They are therefore on by
+  // default and switched off a moment later when the user has turned them off,
+  // taking full effect from the next navigation.
+  window.addEventListener("message", (event: MessageEvent) => {
+    if (event.source !== window) return;
+    const data = event.data as { channel?: unknown; command?: unknown } | null;
+    if (data?.channel !== CHANNEL) return;
+    if (data.command === "disable-worker-instrumentation") workerHook?.disable();
+    if (data.command === "disable-runtime-monitoring") monitor.disable();
+  });
 }

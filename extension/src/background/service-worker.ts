@@ -13,6 +13,7 @@
  * would not survive.
  */
 import {
+  accumulateRuntime,
   analyzeWasm,
   base64ToBytes,
   buildScorecard,
@@ -20,7 +21,7 @@ import {
   sniff,
   summarise,
 } from "@wasm-sentry/core";
-import type { RiskAssessment, RiskLevel } from "@wasm-sentry/core";
+import type { RiskAssessment, RiskLevel, RuntimeFeatures } from "@wasm-sentry/core";
 import {
   addEvent,
   addNote,
@@ -31,15 +32,20 @@ import {
   getAllArtifacts,
   getAnalyses,
   getArtifacts,
+  getArtifactBytes,
   getNotesByTab,
   getRecentEvents,
+  getRuntimeByTab,
   getSightingsByTab,
   hasAnalysis,
+  linkFingerprint,
   prune,
+  resolveFingerprints,
   saveAnalysis,
+  saveRuntimeReport,
   upsertArtifact,
 } from "../utils/db";
-import type { SightingRow } from "../utils/db";
+import type { RuntimeRow, SightingRow } from "../utils/db";
 import { getSettings, setSettings } from "../utils/settings";
 import { decideAlert } from "./alerts";
 import { MAX_ARTIFACT_BYTES } from "../shared/protocol";
@@ -49,6 +55,7 @@ import type {
   CaptureRequest,
   ExtensionMessage,
   ModuleRow,
+  RuntimeRequest,
   SkipRequest,
   TabReport,
   TabArtifactView,
@@ -96,6 +103,13 @@ async function handleCapture(
     { hash, kind, size: bytes.length, bytes, pageUrl: message.pageUrl },
     now,
   );
+
+  // The page can only key its runtime samples by something the page can
+  // compute, and over plain http that cannot be a hash. Recording the join here
+  // is what lets a measurement find the artifact it belongs to.
+  if (message.fingerprint) {
+    await linkFingerprint(message.fingerprint, hash).catch(() => undefined);
+  }
 
   const context = message.context ?? "page";
   const sighting: SightingRow = {
@@ -184,6 +198,119 @@ async function handleSkip(
     timestamp: Date.now(),
   });
   return { ok: true };
+}
+
+/* ------------------------------------------------------------------ */
+/* Runtime intake                                                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Take one context's account of how its modules are behaving, and re-score
+ * whatever it has something to say about.
+ *
+ * Re-running the whole assessment rather than patching the stored one is
+ * deliberate: `mining-runtime-corroborated` has to see the static kernel and
+ * the measured execution together, and a rule that only ever sees half of its
+ * inputs cannot produce the finding this phase exists for. The bytes are still
+ * in `blobs`, which is what makes re-analysis possible at all.
+ */
+async function handleRuntime(
+  message: RuntimeRequest,
+  sender: chrome.runtime.MessageSender,
+): Promise<{ ok: boolean; rescored?: number }> {
+  const tabId = sender.tab?.id ?? -1;
+
+  await saveRuntimeReport({
+    contextId: message.contextId,
+    tabId,
+    pageUrl: message.pageUrl,
+    report: message.report,
+    updatedAt: Date.now(),
+  });
+
+  const rescored = await rescoreTab(tabId);
+  if (rescored > 0) {
+    const report = await refreshBadge(tabId);
+    if (report) await maybeAlert(tabId, report).catch(() => undefined);
+  }
+  return { ok: true, rescored };
+}
+
+/** Fold every context's latest report for a tab into per-hash features. */
+async function runtimeByHash(tabId: number): Promise<Map<string, RuntimeFeatures>> {
+  const rows: RuntimeRow[] = await getRuntimeByTab(tabId);
+  if (rows.length === 0) return new Map();
+
+  const byFingerprint = accumulateRuntime(rows.map((row) => row.report));
+  const hashes = await resolveFingerprints([...byFingerprint.keys()]);
+
+  const byHash = new Map<string, RuntimeFeatures>();
+  for (const [fingerprint, features] of byFingerprint) {
+    const hash = hashes.get(fingerprint);
+    // A fingerprint we never captured bytes for is a module we cannot name.
+    // Dropping it is right: a measurement with nothing to attribute it to
+    // cannot become a finding about anything.
+    if (hash) byHash.set(hash, features);
+  }
+  return byHash;
+}
+
+/**
+ * Re-analyse the modules in a tab that now have runtime evidence.
+ *
+ * Only modules whose evidence has actually moved are re-run: the parse is
+ * bounded but not free, and a report arrives every ten seconds per context.
+ */
+async function rescoreTab(tabId: number): Promise<number> {
+  const runtime = await runtimeByHash(tabId);
+  if (runtime.size === 0) return 0;
+
+  const existing = await getAnalyses([...runtime.keys()]);
+  let rescored = 0;
+
+  for (const [hash, features] of runtime) {
+    const previous = existing.get(hash);
+    if (!previous?.ok) continue;
+    if (!worthRescoring(previous.runtime, features)) continue;
+
+    const bytes = await getArtifactBytes(hash);
+    if (!bytes) continue;
+
+    const analysis = summarise(hash, analyzeWasm(bytes), features);
+    await saveAnalysis(analysis);
+    rescored++;
+
+    const before = previous.risk?.level;
+    const after = analysis.risk?.level;
+    if (after !== undefined && after !== before) {
+      await addEvent({
+        timestamp: Date.now(),
+        kind: "analysed",
+        pageUrl: "",
+        tabId,
+        hash,
+        ...(analysis.risk ? { level: analysis.risk.level, score: analysis.risk.score } : {}),
+        detail: `runtime evidence moved this from ${before ?? "unscored"} to ${after}`,
+      });
+    }
+  }
+
+  return rescored;
+}
+
+/**
+ * Whether new measurements are different enough to be worth a re-parse.
+ *
+ * Reports arrive every ten seconds per context and mostly say the same thing.
+ * Re-analysing on every one of them would burn the service worker's budget
+ * restating a verdict nobody asked to have restated.
+ */
+function worthRescoring(previous: RuntimeFeatures | undefined, next: RuntimeFeatures): boolean {
+  if (!previous) return true;
+  if (next.contextCount !== previous.contextCount) return true;
+  if (Math.abs(next.cpuShare - previous.cpuShare) >= 0.1) return true;
+  // Crossing the observation floor changes which rules can fire at all.
+  return previous.observedMs < 20_000 && next.observedMs >= 20_000;
 }
 
 /* ------------------------------------------------------------------ */
@@ -451,6 +578,9 @@ chrome.runtime.onMessage.addListener((raw, sender, sendResponse) => {
         break;
       case "wasm-sentry:skipped":
         work = handleSkip(message, sender);
+        break;
+      case "wasm-sentry:runtime":
+        work = handleRuntime(message, sender);
         break;
       case "wasm-sentry:tab-report":
         work = buildTabReport(message.tabId);

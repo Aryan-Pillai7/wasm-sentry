@@ -459,6 +459,114 @@ almost every production build strips names, so it only matters as a multiplier.
 
 ---
 
+## 5a. Runtime monitoring (Phase 4)
+
+### 5a.1 Why this phase had to exist
+
+§5.1 ends on a measurement that no further static work could fix: a legitimate
+Rust image codec contains a 631-instruction loop that is 24.5% shifts and xors
+with no calls and no floating point, and it is **statically indistinguishable**
+from a hashing kernel. Compression, checksums and image filters all take that
+shape.
+
+The difference is not in the bytes. It is that one of them runs flat out for
+minutes. That is what this phase measures, and it is why `hash-loop-density` was
+capped below the high band until it arrived.
+
+### 5a.2 Timing the exports, and why not a Proxy
+
+To attribute execution to a module you have to be inside its calls, which means
+the page has to receive an exports namespace that is not the engine's own. This
+is the second and last place the extension does that, and it is a real cost.
+
+**A `Proxy` with a `get` trap does not work.** An instance's exports namespace is
+created with a null prototype and then *frozen*, so every property is
+non-configurable and non-writable, and a proxy over it may not return anything
+other than the target's own value -- the invariant check throws a `TypeError` on
+first access. That failure would surface inside the page's own code, at its
+first call into its own module. This was found by writing the proxy version
+first.
+
+**So the namespace is reproduced.** Same key order, same null prototype, frozen
+the same way, function exports replaced by timed wrappers that carry the
+original `name` and `length` (Emscripten reads `length` when building call
+shims), everything else -- memories, tables, globals -- passed through by
+identity. Wrappers are per instance, never cached by module: two instances of
+one module have different export functions, and a shared wrapper would call into
+the wrong one.
+
+### 5a.3 The measurement must not become the cost
+
+A module called a million times in a hot loop would spend more time in
+`performance.now()` than in its own body. So timing switches itself off after
+20,000 calls averaging under 0.05 ms -- a library being used, not a kernel being
+run. Counting continues, the accumulated total stops growing, and it is reported
+as `timingStopped` so every finding built on it can say out loud that the number
+is a floor. A long-running kernel never trips this: its mean is nowhere near the
+threshold, which is precisely the shape worth timing.
+
+### 5a.4 Timer lateness instead of a CPU reading
+
+There is no API that reports CPU use to a content script. A periodic timer that
+arrives late is direct evidence that something held the thread, costs one
+closure per second, needs no permission, and works identically inside a worker.
+
+It is never read on its own: a backgrounded tab is throttled to whole-second
+ticks, which would look identical. It appears only as corroboration alongside
+measured execution time.
+
+### 5a.5 Core-equivalents, not a percentage
+
+Each context's share of its own observed window is capped at 1, and the capped
+shares are summed. A module saturating four workers reports about 4.0.
+
+Averaging would have been the obvious choice and would have been wrong: it
+hides fan-out behind an idle main thread, and fan-out across every core is the
+shape this whole phase is looking for.
+
+### 5a.6 Cumulative reports, keyed by context
+
+Reports are the whole state of a context, not a delta, and the service worker
+keeps the latest per context and folds them together. A worker that is
+terminated between reports takes nothing with it, and a duplicate cannot
+double-count -- neither of which is true of deltas, and both of which happen
+constantly (terminated workers, a service worker Chrome killed mid-flight).
+
+### 5a.7 Fingerprints, because the page cannot hash
+
+Runtime samples can only be keyed by something the page can compute, and over
+plain http that cannot be SHA-256 -- `crypto.subtle` is undefined there (§2.10).
+So samples carry the page-side FNV-1a fingerprint, the service worker records
+the fingerprint-to-hash join when it accepts a capture, and a report about a
+fingerprint it never saw bytes for is **dropped rather than guessed at**. A
+measurement with nothing to attribute it to cannot become a finding about
+anything.
+
+### 5a.8 Re-scoring, not patching
+
+When the evidence moves, the module is re-analysed from its stored bytes and run
+through the same rule pass. Patching the stored verdict would have been cheaper
+and would not work: `mining-runtime-corroborated` has to see the static kernel
+and the measured execution *together*, and a rule that only ever sees half its
+inputs cannot produce the finding this phase exists for.
+
+Re-scoring is gated on the evidence actually having moved -- a report arrives
+every ten seconds per context, and most of them say the same thing.
+
+### 5a.9 What was measured, and what was not
+
+The mechanism is measured. Driven in headless Chrome against a fixture that
+really spins: 8 of 8 grinding workers reported under their own identities, and
+the busiest measured 12.0s of execution inside a 12.0s window -- a full core
+each.
+
+**The thresholds are not calibrated against real mining samples**, because there
+is still no labelled corpus. They are conservative bounds, and `detection.md`
+says so in the same words. Claiming otherwise would be the unsupported number
+this project has refused to claim everywhere else.
+
+---
+
 ## 6. Testing
 
 ### 6.1 Self-validating fixtures
@@ -501,10 +609,11 @@ worker is instrumented from the same prelude blob.
 
 ### 6.5 Counts
 
-118 tests. 41 in `core` (sniffing, hashing, base64, parser, decoder, CFG,
-features, heuristics, scoring) and 77 in `extension` (capture hooks, worker
-instrumentation and base compensation, the built worker prelude, storage against
-a real IndexedDB, popup message handling, alert policy, formatting, and an
+152 tests. 58 in `core` (sniffing, hashing, base64, parser, decoder, CFG,
+features, heuristics, scoring, runtime accumulation and runtime rules) and 94 in
+`extension` (capture hooks, worker instrumentation and base compensation, the
+built worker prelude, the runtime monitor and socket counting, storage against a
+real IndexedDB, popup message handling, alert policy, formatting, and an
 end-to-end run through the real service worker).
 
 ### 6.6 No detection rate is claimed
@@ -522,7 +631,6 @@ criticises.
 | Not done | Why |
 |---|---|
 | ML classifier | Needs the Phase 2 feature pipeline (done) *and* a labelled dataset (not obtained). Heuristics are the baseline it has to beat — building the model first leaves nothing to compare against. |
-| Runtime monitoring | Phase 4. It is the signal that settles the mining question, per §5.1. |
 | JS bundle analysis | Needs its own consent story: shipping page scripts anywhere is a bigger privacy question than Wasm modules. |
 | SQLite + job queue | Only meaningful once upload is opt-in-able and there is deep analysis worth queueing. |
 | Element/data segment contents | Only needed for indirect-call resolution; segment *counts* are already a useful structural feature. |
@@ -531,12 +639,12 @@ criticises.
 
 ## 8. At a glance
 
-- **7-stage pipeline**, 3 of 5 phases complete
+- **7-stage pipeline**, 4 of 5 phases complete
 - **0 runtime dependencies** in the analysis core
 - **643 KB / 1,879 functions parsed in 165 ms**; 2.4 MB / 975k instructions in 399 ms
 - **0 warnings, 0 undecodable function bodies** on both real-world modules
 - **~38 KB** added to the extension bundle by the whole analysis engine
-- **118 tests**, all green — 41 in `core`, 77 in `extension`
+- **152 tests**, all green — 58 in `core`, 94 in `extension`
 - **12 detection rules**, every one citing evidence, 5 citing literature
 - Calibration: benign real-world modules score **6** and **21** out of 100; the
   full mining shape scores **63**

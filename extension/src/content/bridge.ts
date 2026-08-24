@@ -12,7 +12,12 @@
  */
 import { bytesToBase64 } from "@wasm-sentry/core";
 import { CAPTURE_CHANNEL, MAX_ARTIFACT_BYTES } from "../shared/protocol";
-import type { CaptureContext, CaptureRequest, SkipRequest } from "../shared/protocol";
+import type {
+  CaptureContext,
+  CaptureRequest,
+  RuntimeRequest,
+  SkipRequest,
+} from "../shared/protocol";
 import { getSettings } from "../utils/settings";
 import type { WasmApi } from "@wasm-sentry/core";
 
@@ -33,7 +38,7 @@ function contextOf(value: unknown): CaptureContext {
   return typeof value === "string" && VALID_CONTEXTS.has(value) ? (value as CaptureContext) : "page";
 }
 
-function send(message: CaptureRequest | SkipRequest): void {
+function send(message: CaptureRequest | SkipRequest | RuntimeRequest): void {
   // Fire and forget. A closed service worker, a torn-down extension context or
   // a navigation mid-flight all reject here, and none of them are actionable.
   void chrome.runtime.sendMessage(message).catch(() => undefined);
@@ -47,9 +52,28 @@ window.addEventListener("message", (event: MessageEvent) => {
   const data = event.data as Record<string, unknown> | null;
   if (!data || data["channel"] !== CAPTURE_CHANNEL) return;
 
+  const pageUrlValue = data["pageUrl"];
+
+  // Runtime reports carry no bytes and no API -- they are measurements, not
+  // captures -- so they are recognised before the capture validation below.
+  const runtime = data["runtime"];
+  if (runtime !== undefined) {
+    const contextId = data["contextId"];
+    if (typeof runtime !== "object" || runtime === null) return;
+    if (typeof contextId !== "string" || typeof pageUrlValue !== "string") return;
+    if (!Array.isArray((runtime as { modules?: unknown }).modules)) return;
+    send({
+      type: "wasm-sentry:runtime",
+      contextId,
+      pageUrl: pageUrlValue,
+      report: runtime as RuntimeRequest["report"],
+    });
+    return;
+  }
+
   const api = data["api"];
   const url = data["url"];
-  const pageUrl = data["pageUrl"];
+  const pageUrl = pageUrlValue;
   if (typeof api !== "string" || !VALID_APIS.has(api)) return;
   if (typeof url !== "string" || typeof pageUrl !== "string") return;
 
@@ -80,25 +104,30 @@ window.addEventListener("message", (event: MessageEvent) => {
     size: bytes.length,
     bytesB64: bytesToBase64(bytes),
     context: contextOf(data["context"]),
+    ...(typeof data["fingerprint"] === "string" ? { fingerprint: data["fingerprint"] } : {}),
   });
 });
 
 /**
- * Relay the worker-instrumentation setting into the main world.
+ * Relay the two opt-out settings into the main world.
  *
- * The main-world hook has to exist before the page's first line runs, and
- * `chrome.storage` is async, so it cannot be consulted first. Instrumentation
- * is on by default and switched off here a few milliseconds later when the user
- * has disabled it -- see `installWorkerHook`'s `disable()`. A worker started
- * inside that window is still instrumented; the setting takes full effect from
+ * Both hooks have to exist before the page's first line runs, and
+ * `chrome.storage` is async, so neither setting can be consulted first. They
+ * are on by default and switched off here a few milliseconds later when the
+ * user has disabled them. A worker started -- or a module instantiated --
+ * inside that window is still instrumented; the settings take full effect from
  * the next navigation.
  */
 void getSettings()
   .then((settings) => {
-    if (settings.instrumentWorkers) return;
-    window.postMessage(
-      { channel: CAPTURE_CHANNEL, command: "disable-worker-instrumentation" },
-      "*",
-    );
+    if (!settings.instrumentWorkers) {
+      window.postMessage(
+        { channel: CAPTURE_CHANNEL, command: "disable-worker-instrumentation" },
+        "*",
+      );
+    }
+    if (!settings.monitorRuntime) {
+      window.postMessage({ channel: CAPTURE_CHANNEL, command: "disable-runtime-monitoring" }, "*");
+    }
   })
   .catch(() => undefined);

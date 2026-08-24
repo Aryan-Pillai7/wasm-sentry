@@ -55,10 +55,34 @@ predictable 4/3.
 |---|---|---|
 | `wasm-sentry:capture` | `{ api, url, pageUrl, size, bytesB64, context? }` | `{ ok, hash? , reason? }` |
 | `wasm-sentry:skipped` | `{ api, url, pageUrl, size, reason, context? }` | `{ ok: true }` |
+| `wasm-sentry:runtime` | `{ contextId, pageUrl, report }` | `{ ok, rescored }` |
 | `wasm-sentry:tab-report` | `{ tabId }` | `TabReport` |
 
 `TabReport` carries one row per distinct artifact hash seen in the tab, plus the
 notes for artifacts that were observed but not analysed.
+
+A `RuntimeReport` is the whole state of one reporting context -- the page, or one
+worker -- sent every ten seconds:
+
+```ts
+{
+  context: "page" | "worker",
+  observedMs: number,              // how long this context has been watched
+  drift: { samples, lateMs, maxLateMs },   // how starved its event loop is
+  workerCount, socketCount, socketMessages, hardwareConcurrency: number,
+  modules: Array<{
+    fingerprint: string,           // page-side, not the hash -- see below
+    wasmTimeMs, callCount, longestCallMs: number,
+    timingStopped: boolean,        // if true, wasmTimeMs is a floor
+  }>,
+}
+```
+
+Cumulative rather than incremental, so a context killed between reports takes
+nothing with it and a duplicate cannot double-count. Keyed by the page-side
+fingerprint because `crypto.subtle` is undefined over plain http; the service
+worker joins it to the content hash from the captures it already accepted, and
+drops any report it cannot attribute.
 
 Limits: `MAX_ARTIFACT_BYTES` = 16 MiB, `MAX_CAPTURES_PER_MINUTE` = 60 per frame.
 

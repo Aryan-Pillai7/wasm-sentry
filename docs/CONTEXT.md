@@ -15,15 +15,14 @@ Last updated after the dashboard landed.
 | 1 | Capture layer | complete, tested |
 | 2 | Disassembly + static analysis | complete, tested |
 | 3 | Heuristics + Privacy Scorecard | complete, tested |
-| 4 | Runtime behavioural monitoring | not started |
+| 4 | Runtime behavioural monitoring | complete, tested |
 | 5 | ML classifier | not started |
 | — | JS bundle / supply-chain analysis | not started |
 | — | Backend SQLite + job queue | not started (health endpoint only) |
 
-Beyond the three phases, the extension has since gained a dashboard, desktop
-notifications, generated icons, a testbed page, CI, and worker instrumentation
-that closed the last capture blind spot. 118 tests, all green: 41 in `core`,
-77 in `extension`.
+Beyond the phases, the extension has gained a dashboard, desktop notifications,
+generated icons, a testbed page, CI, and worker instrumentation that closed the
+last capture blind spot. 152 tests, all green: 58 in `core`, 94 in `extension`.
 
 ```
 d83f408  Add a dashboard so the extension can show its own work
@@ -73,11 +72,17 @@ notification permission level, a live activity feed, and every module seen.
 npm run testbed      # emits fixtures, serves testbed/ on :8080
 ```
 
-Nine buttons, one per capture path — streaming, in-memory buffer, compile +
+Ten buttons. Nine are capture paths — streaming, in-memory buffer, compile +
 instantiate, the `Module` constructor, a `blob:` URL, a dedup check, a classic
 Worker, a module Worker, and a Worker inside a Worker. Expect a red badge, one
 notification for `miner.wasm` at 63/100, the feed filling in live, and the
 worker modules tagged **in a Worker** rather than listed as not analysed.
+
+The tenth is Phase 4: **grind for 25s across every core**. It starts one worker
+per two cores running a fixture that really spins, and after twenty seconds
+`sustained-kernel.wasm` should move from its ambiguous static verdict to
+`mining-runtime-corroborated`, with the popup showing the seconds executed and
+the core-equivalents behind it.
 
 ### Checking capture in a real browser, without installing anything
 
@@ -102,8 +107,11 @@ chrome --headless=new --remote-debugging-port=9222 --user-data-dir=/tmp/p about:
 # and read document.getElementById("log").innerText
 ```
 
-Expect five captures: one `page`, and four `worker` — a classic worker, a module
-worker, a worker nested inside one, and that nested worker's own parent.
+Expect five captures from the worker checks: one `page`, and four `worker` — a
+classic worker, a module worker, a worker nested inside one, and that nested
+worker's own parent. The runtime checks then start one grinding worker per two
+cores and assert that each reports under its own identity and that the busiest
+measured close to a full core of execution.
 
 ### Command line
 
@@ -137,7 +145,8 @@ core/                    @wasm-sentry/core -- zero runtime dependencies
     base64.ts            transport encoding for chrome.runtime messages
     analysis.ts          analyzeWasm(): entry point, never throws
     report.ts            summarise(): full analysis -> storable record
-    heuristics.ts        the 12 detection rules
+    heuristics.ts        12 static rules + 5 runtime rules
+    runtime.ts           runtime vocabulary; folding reports into features
     scoring.ts           saturating score, bands, page scorecard
     wasm/
       reader.ts          bounds-checked LEB128 / vector reads
@@ -153,6 +162,8 @@ core/                    @wasm-sentry/core -- zero runtime dependencies
 extension/
   src/
     content/injector.ts       MAIN-world entry
+    content/runtime-monitor.ts  export timing, timer drift, per-context reports
+    content/socket-hooks.ts   WebSocket open/message counts (counts only)
     content/capture-hooks.ts  interception logic (globals injected -> testable)
     content/worker-hooks.ts   Worker constructor wrapper, shim source, message intake
     content/worker-prelude.ts what runs inside a worker; bundled to a string
@@ -164,12 +175,13 @@ extension/
     popup/load-report.ts      message fetching with every failure mode named
     dashboard/                cross-tab activity, status, modules, settings
     shared/protocol.ts        message types + caps
-    utils/db.ts               IndexedDB (schema v3)
+    utils/db.ts               IndexedDB (schema v4)
     utils/settings.ts         local-first defaults
   scripts/build-scripts.mjs   esbuild; builds the prelude to a string first
   scripts/make-icons.mjs      renders + encodes the PNG icons
   test/pipeline.test.ts       end-to-end through the real service worker
   test/worker-prelude.test.ts builds the prelude and runs it in a fake worker scope
+  test/runtime-monitor.test.ts  what the page sees, and what measuring costs
 
 backend/                 health endpoint only, ESM + tsx
 testbed/                 local page exercising every capture path
@@ -229,42 +241,26 @@ docs/                    architecture, detection, api-spec, this file
    Found in the real browser, not in a unit test — the testbed fixtures wait a
    beat before `terminate()` so they demonstrate capture rather than the race.
    Nothing is silently lost: the network observer still notes the module.
-9. **IndexedDB is at schema v3.** Upgrades drop all stores rather than migrating;
-   the contents are a cache of things the browser can observe again. Bump
-   `DB_VERSION` in `extension/src/utils/db.ts` when stores change.
+9. **IndexedDB is at schema v4.** Upgrades drop all stores rather than
+   migrating; the contents are a cache of things the browser can observe again.
+   Bump `DB_VERSION` in `extension/src/utils/db.ts` when stores change.
+10. **A `Proxy` over an instance's exports throws.** The namespace is frozen with
+    a null prototype, so a `get` trap may not return anything but the target's
+    own value -- the invariant check raises a `TypeError` inside the page's first
+    call into its own module. `runtime-monitor.ts` reproduces the namespace
+    instead. Do not "simplify" it back to a proxy.
+11. **Runtime thresholds are not corpus-calibrated, and the docs say so.** The
+    mechanism is measured; the lines drawn on it are conservative. If you tune
+    them, `docs/detection.md` has to change with them, and no detection rate may
+    be claimed either way.
 
 ---
 
 ## Next steps, in order
 
-### Phase 4 — runtime behavioural monitoring
-
-The most valuable remaining work, because calibration established that **static
-density cannot separate mining from compression** (see `docs/detection.md`) —
-runtime CPU is what settles it. This is also what MINOS does.
-
-1. Extend the main-world injector to sample:
-   - wall-clock time inside exported Wasm functions (wrap the instantiated
-     module's `exports` object);
-   - `requestAnimationFrame` / `performance.now()` drift as a CPU-saturation
-     proxy;
-   - `Worker` constructor calls and their count (worker fan-out);
-   - `WebSocket` opens and message volume, attributed to the frame.
-2. Attribute samples back to the artifact hash — the instantiation that produced
-   the exports is the same call the hook already sees, so carry the hash through.
-3. Add runtime rules to `heuristics.ts`, taking a `RuntimeFeatures` input
-   alongside `ModuleFeatures`.
-4. Feed them into the existing `assessRisk()`. The aggregation already takes an
-   arbitrary finding list, so nothing there needs redesigning.
-5. Expect `mining-corroborated` to become far stronger: kernel plus sustained CPU
-   is close to conclusive.
-
-Watch out for: sampling must not itself burn CPU, and a busy page is not a mining
-page — use sustained load over tens of seconds, not a spike.
-
 ### Phase 5 — ML classifier
 
-Blocked on data, not code.
+Blocked on data, not code. Now the last unfinished phase.
 
 - **A labelled corpus is the blocker.** WasmBench for benign; malicious samples
   are the hard part and may need requesting from the authors of the cryptojacking
@@ -275,7 +271,9 @@ Blocked on data, not code.
   Deep-Wasm uses.
 - Train outside the extension; ship inference only.
 - **The heuristics are the baseline to beat.** Report the model against them, not
-  against nothing.
+  against nothing. That baseline is now stronger than it was: it includes runtime
+  evidence, and a classifier trained on static features alone is being compared
+  against something that can see more than it can.
 
 ### Smaller items
 

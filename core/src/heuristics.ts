@@ -14,6 +14,7 @@
  * every threshold sits well clear of where ordinary compiled code lands.
  */
 import type { ModuleFeatures } from "./wasm/features.js";
+import type { RuntimeFeatures } from "./runtime.js";
 
 export type Severity = "info" | "low" | "medium" | "high";
 
@@ -44,6 +45,23 @@ interface Rule {
   weight: number;
   reference?: string;
   evaluate: (features: ModuleFeatures) => RuleHit | null;
+}
+
+/**
+ * A rule that needs to see the module run.
+ *
+ * Kept as a separate list rather than made optional on `Rule`, so that a static
+ * rule can never quietly start depending on runtime data it will not have: most
+ * modules are scored the moment they are captured, seconds before any runtime
+ * evidence exists.
+ */
+interface RuntimeRule {
+  id: string;
+  title: string;
+  severity: Severity;
+  weight: number;
+  reference?: string;
+  evaluate: (runtime: RuntimeFeatures, features: ModuleFeatures) => RuleHit | null;
 }
 
 function percent(value: number): string {
@@ -303,34 +321,222 @@ const RULES: Rule[] = [
   },
 ];
 
-/** Run every rule against a feature vector, strongest finding first. */
-export function evaluateHeuristics(features: ModuleFeatures): Finding[] {
+/* ------------------------------------------------------------------ */
+/* Runtime rules                                                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * How long a module has to be watched before its behaviour means anything.
+ *
+ * A page is legitimately busy for a few seconds all the time -- decoding an
+ * image, starting a game, running a spreadsheet recalculation. Twenty seconds
+ * of sustained execution is a different claim from a spike, and the difference
+ * is the whole reason this phase exists.
+ */
+const MIN_OBSERVED_MS = 20_000;
+
+/**
+ * Timer lateness that counts as a starved event loop.
+ *
+ * The sampler asks for a tick every second. Ordinary scheduling jitter is a few
+ * milliseconds; a background tab is throttled to whole seconds, which is why
+ * drift is only ever read as corroboration alongside measured execution time
+ * and never on its own.
+ */
+const STARVED_DRIFT_MS = 250;
+
+function seconds(ms: number): string {
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
+const RUNTIME_RULES: RuntimeRule[] = [
+  {
+    // Deliberately weighted below the high band on its own. A video codec, a
+    // game and a physics engine all saturate a core honestly, and the whole
+    // lesson of the static calibration was that a shape shared with legitimate
+    // software is a prior, not a verdict.
+    id: "sustained-execution",
+    title: "Runs continuously rather than in bursts",
+    severity: "medium",
+    weight: 28,
+    reference: "MINOS: A Lightweight Real-Time Cryptojacking Detection System",
+    evaluate: (r) => {
+      if (r.observedMs < MIN_OBSERVED_MS) return null;
+      if (r.cpuShare < 0.5) return null;
+      return {
+        confidence: Math.min(ramp(r.cpuShare, 0.5, 2), 1),
+        evidence:
+          `spent ${seconds(r.wasmTimeMs)} executing during ${seconds(r.observedMs)} of observation ` +
+          `across ${r.contextCount} context(s) — ${r.cpuShare.toFixed(2)} core-equivalents` +
+          (r.timingStopped ? ", and that is a floor: per-call timing was stopped to avoid becoming the cost itself" : ""),
+      };
+    },
+  },
+
+  {
+    // The finding this phase was built for. Static analysis cannot separate a
+    // hashing kernel from an image codec; a hashing kernel that then runs flat
+    // out for half a minute is no longer ambiguous.
+    id: "mining-runtime-corroborated",
+    title: "Compute kernel that then ran flat out",
+    severity: "high",
+    weight: 45,
+    reference: "MINOS: A Lightweight Real-Time Cryptojacking Detection System",
+    evaluate: (r, f) => {
+      const kernel = kernelHit(f);
+      if (!kernel) return null;
+      if (r.observedMs < MIN_OBSERVED_MS || r.cpuShare < 0.5) return null;
+
+      const corroboration: string[] = [];
+      if (r.contextCount > 1) corroboration.push(`${r.contextCount} contexts at once`);
+      if (r.meanDriftMs >= STARVED_DRIFT_MS) {
+        corroboration.push(`its own timers running ${r.meanDriftMs.toFixed(0)}ms late`);
+      }
+      if (r.socketMessages > 0) {
+        corroboration.push(`${r.socketMessages} messages over ${r.socketCount} socket(s)`);
+      }
+
+      return {
+        confidence: Math.min(kernel.confidence * Math.min(0.7 + 0.15 * corroboration.length, 1.3), 1),
+        evidence:
+          `${kernel.evidence}; it then ran for ${seconds(r.wasmTimeMs)} of ${seconds(r.observedMs)} ` +
+          `(${r.cpuShare.toFixed(2)} core-equivalents)` +
+          (corroboration.length > 0 ? `, with ${corroboration.join(" and ")}` : "") +
+          ` — compression and checksum routines do not run continuously`,
+      };
+    },
+  },
+
+  {
+    id: "worker-fan-out",
+    title: "Executes in several workers at once",
+    severity: "medium",
+    weight: 20,
+    reference: "Silent Spring: Characterizing Cryptojacking in the Wild",
+    evaluate: (r) => {
+      if (r.contextCount < 2 || !r.contexts.includes("worker")) return null;
+      const cores = r.hardwareConcurrency > 0 ? r.hardwareConcurrency : 4;
+      // Two workers is a thread pool. Half the machine is a decision about the
+      // machine rather than about the work.
+      if (r.contextCount < Math.max(2, Math.ceil(cores / 2))) return null;
+      return {
+        // Floored rather than ramped from zero: the gate above has already
+        // decided this is worth reporting, and a bare `ramp` starting at the
+        // same point returns exactly zero for a module sitting on it, which
+        // would drop the finding the gate just admitted.
+        confidence: Math.min(0.4 + 0.6 * ramp(r.contextCount / cores, 0.5, 1), 1),
+        evidence:
+          `the same module is executing in ${r.contextCount} contexts on a ${cores}-core machine, ` +
+          `for ${seconds(r.wasmTimeMs)} in total — the shape of claiming every core`,
+      };
+    },
+  },
+
+  {
+    id: "persistent-socket-traffic",
+    title: "Keeps a socket busy while it computes",
+    severity: "low",
+    weight: 12,
+    evaluate: (r) => {
+      if (r.socketCount === 0 || r.socketMessages < 10) return null;
+      if (r.wasmTimeMs < 5_000) return null;
+      return {
+        confidence: 0.45,
+        evidence:
+          `${r.socketMessages} messages across ${r.socketCount} socket(s) while executing for ` +
+          `${seconds(r.wasmTimeMs)} — a mining pool hands out work and takes back shares this way`,
+      };
+    },
+  },
+
+  {
+    id: "runtime-not-yet-observed",
+    title: "Runtime behaviour not observed for long enough",
+    severity: "info",
+    weight: 0,
+    evaluate: (r) => {
+      if (r.observedMs >= MIN_OBSERVED_MS) return null;
+      return {
+        confidence: 1,
+        evidence:
+          `watched for ${seconds(r.observedMs)} so far; runtime rules need ${seconds(MIN_OBSERVED_MS)} ` +
+          `before a busy page can be told from a mining page`,
+      };
+    },
+  },
+];
+
+/* ------------------------------------------------------------------ */
+/* Evaluation                                                          */
+/* ------------------------------------------------------------------ */
+
+function toFinding(
+  rule: { id: string; title: string; severity: Severity; weight: number; reference?: string },
+  hit: RuleHit,
+): Finding {
+  return {
+    id: rule.id,
+    title: rule.title,
+    severity: rule.severity,
+    confidence: Number(hit.confidence.toFixed(3)),
+    weight: rule.weight,
+    evidence: hit.evidence,
+    ...(rule.reference !== undefined ? { reference: rule.reference } : {}),
+  };
+}
+
+/**
+ * Run every rule against a feature vector, strongest finding first.
+ *
+ * `runtime` is optional and usually absent: a module is scored the moment it is
+ * captured, which is seconds before there is anything to say about how it
+ * behaves. The static verdict stands on its own and is replaced, not amended,
+ * when runtime evidence arrives.
+ */
+export function evaluateHeuristics(
+  features: ModuleFeatures,
+  runtime?: RuntimeFeatures,
+): Finding[] {
   const findings: Finding[] = [];
 
   for (const rule of RULES) {
     const hit = rule.evaluate(features);
     if (!hit || hit.confidence <= 0) continue;
-    findings.push({
-      id: rule.id,
-      title: rule.title,
-      severity: rule.severity,
-      confidence: Number(hit.confidence.toFixed(3)),
-      weight: rule.weight,
-      evidence: hit.evidence,
-      ...(rule.reference !== undefined ? { reference: rule.reference } : {}),
-    });
+    findings.push(toFinding(rule, hit));
+  }
+
+  if (runtime) {
+    for (const rule of RUNTIME_RULES) {
+      const hit = rule.evaluate(runtime, features);
+      if (!hit || hit.confidence <= 0) continue;
+      findings.push(toFinding(rule, hit));
+    }
   }
 
   return findings.sort((a, b) => b.weight * b.confidence - a.weight * a.confidence);
 }
 
+export interface RuleSummary {
+  id: string;
+  title: string;
+  severity: Severity;
+  weight: number;
+  reference?: string;
+  /** Whether the rule needs the module to have been observed running. */
+  kind: "static" | "runtime";
+}
+
 /** Every rule the engine can produce, for documentation and UI legends. */
-export function listRules(): Array<Pick<Rule, "id" | "title" | "severity" | "weight" | "reference">> {
-  return RULES.map(({ id, title, severity, weight, reference }) => ({
-    id,
-    title,
-    severity,
-    weight,
-    ...(reference !== undefined ? { reference } : {}),
-  }));
+export function listRules(): RuleSummary[] {
+  const summarise = (kind: "static" | "runtime") =>
+    ({ id, title, severity, weight, reference }: Rule | RuntimeRule): RuleSummary => ({
+      id,
+      title,
+      severity,
+      weight,
+      kind,
+      ...(reference !== undefined ? { reference } : {}),
+    });
+
+  return [...RULES.map(summarise("static")), ...RUNTIME_RULES.map(summarise("runtime"))];
 }

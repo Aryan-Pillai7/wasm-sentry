@@ -30,6 +30,16 @@ export interface Settings {
    * an off switch that the rest of the capture layer does not need.
    */
   instrumentWorkers: boolean;
+  /**
+   * Measure how modules behave once they are running.
+   *
+   * Static analysis cannot tell a hashing kernel from an image codec; how long
+   * a module runs can. The cost is that a module's exported functions are
+   * handed to the page wrapped in a timer, which is the second and last place
+   * the extension gives a page something other than what the engine produced --
+   * so, like worker instrumentation, it has a switch.
+   */
+  monitorRuntime: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -38,6 +48,7 @@ export const DEFAULT_SETTINGS: Settings = {
   trackNetworkSightings: true,
   notifyOnHighRisk: true,
   instrumentWorkers: true,
+  monitorRuntime: true,
 };
 
 const KEY = "settings";

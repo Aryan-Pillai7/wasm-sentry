@@ -171,6 +171,35 @@ function ModuleCard({ module, now }: { module: ModuleRow; now: number }): React.
       <div className="module-body">
         {risk && <p className="headline">{risk.headline}</p>}
 
+        {module.analysis?.runtime && (
+          <dl className="facts">
+            <div>
+              <dt>observed</dt>
+              <dd>{(module.analysis.runtime.observedMs / 1000).toFixed(0)}s</dd>
+            </div>
+            <div>
+              <dt>executing</dt>
+              <dd>{(module.analysis.runtime.wasmTimeMs / 1000).toFixed(1)}s</dd>
+            </div>
+            <div>
+              <dt>cores</dt>
+              <dd>{module.analysis.runtime.cpuShare.toFixed(2)}</dd>
+            </div>
+            <div>
+              <dt>contexts</dt>
+              <dd>{module.analysis.runtime.contextCount}</dd>
+            </div>
+            <div>
+              <dt>calls</dt>
+              <dd>{module.analysis.runtime.callCount}</dd>
+            </div>
+            <div>
+              <dt>timer lag</dt>
+              <dd>{module.analysis.runtime.meanDriftMs.toFixed(0)}ms</dd>
+            </div>
+          </dl>
+        )}
+
         {summary && (
           <dl className="facts">
             <div><dt>functions</dt><dd>{summary.functionCount}</dd></div>
@@ -240,6 +269,12 @@ const TOGGLES: Array<{ key: string; label: string; description: string }> = [
     label: "Analyse WebAssembly inside Web Workers",
     description:
       "Carries the capture hooks into workers, which is where a miner would put its kernel. It is the only setting that changes how a page loads its own code, so turn it off if a site misbehaves; the change applies from the next page load.",
+  },
+  {
+    key: "monitorRuntime",
+    label: "Measure how modules behave once they run",
+    description:
+      "Times the exported functions a module hands the page, which is what separates a hashing kernel from an image codec. Timing switches itself off for modules called in a hot loop, so the measurement never becomes the cost.",
   },
   {
     key: "trackNetworkSightings",

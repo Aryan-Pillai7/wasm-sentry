@@ -90,6 +90,56 @@ export function minerLikeModule(): Uint8Array {
   ]);
 }
 
+/**
+ * A module that actually spins: the same rotate-and-xor kernel, run for a
+ * caller-supplied number of iterations rather than exiting immediately.
+ *
+ * Every other fixture here computes nothing on purpose -- their accumulators
+ * stay zero and their loops exit on the first pass -- which is right for a
+ * parser test and useless for a runtime one. Measuring how long a module runs
+ * needs a module that runs. It still computes nothing anybody wants: it burns a
+ * counter down and returns the accumulator, connecting to nothing.
+ */
+export function sustainedKernelModule(): Uint8Array {
+  const round = (constant: number): number[] => [
+    0x20, 0x01, //   local.get 1        (accumulator)
+    0x41, ...sleb(constant), // i32.const K
+    0x77, //         i32.rotl
+    0x20, 0x01, //   local.get 1
+    0x73, //         i32.xor
+    0x21, 0x01, //   local.set 1
+  ];
+
+  const loopBody: number[] = [];
+  for (let i = 0; i < 24; i++) loopBody.push(...round((i * 7) % 31));
+
+  const body = [
+    ...vec([[...uleb(1), I32]]), // one i32 local: the accumulator
+    0x03, 0x40, //       loop
+    ...loopBody,
+    0x20, 0x00, //         local.get 0   (iterations remaining)
+    0x41, 0x01, //         i32.const 1
+    0x6b, //               i32.sub
+    0x21, 0x00, //         local.set 0
+    0x20, 0x00, //         local.get 0
+    0x41, 0x00, //         i32.const 0
+    0x4a, //               i32.gt_s
+    0x0d, 0x00, //         br_if 0       -- keep going while iterations remain
+    0x0b, //             end
+    0x20, 0x01, //       local.get 1
+    0x0b, //             end
+  ];
+
+  return module([
+    section(1, vec([[0x60, ...vec([[I32]]), ...vec([[I32]])]])), // (i32) -> i32
+    section(2, vec([[...name("pool"), ...name("websocket_send"), 0x00, ...uleb(0)]])),
+    section(3, vec([[0]])),
+    section(5, vec([[0x01, ...uleb(16), ...uleb(32)]])),
+    section(7, vec([[...name("grind"), 0x00, ...uleb(1)]])),
+    section(10, vec([[...uleb(body.length), ...body]])),
+  ]);
+}
+
 /** A module shaped like ordinary compiled code: float arithmetic, no loops. */
 export function benignModule(): Uint8Array {
   const f64Const = (value: number): number[] => {

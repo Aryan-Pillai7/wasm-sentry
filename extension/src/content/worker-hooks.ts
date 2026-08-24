@@ -24,6 +24,7 @@
  * The globals are injected rather than reached for, so the whole thing runs
  * against fakes in a test.
  */
+import type { RuntimeReport } from "@wasm-sentry/core";
 import type { HookCapture, HookSkip } from "./capture-hooks";
 
 /** Marks a message as ours rather than the page's, in both directions. */
@@ -46,10 +47,37 @@ export interface WorkerCaptureMessage {
   capture: HookCapture | HookSkip;
 }
 
+/** A worker's periodic account of how its modules are behaving. */
+export interface WorkerRuntimeMessage {
+  channel: typeof WORKER_CHANNEL;
+  runtime: RuntimeReport;
+  /** Identifies the reporting worker, so its reports supersede rather than add. */
+  contextId: string;
+}
+
+/** Anything travelling on our private worker channel. */
+export type WorkerMessage = WorkerCaptureMessage | WorkerRuntimeMessage;
+
+function onOurChannel(value: unknown): value is { channel: typeof WORKER_CHANNEL } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { channel?: unknown }).channel === WORKER_CHANNEL
+  );
+}
+
 export function isWorkerCaptureMessage(value: unknown): value is WorkerCaptureMessage {
-  if (typeof value !== "object" || value === null) return false;
-  const message = value as Partial<WorkerCaptureMessage>;
-  return message.channel === WORKER_CHANNEL && typeof message.capture === "object";
+  return onOurChannel(value) && typeof (value as WorkerCaptureMessage).capture === "object";
+}
+
+export function isWorkerRuntimeMessage(value: unknown): value is WorkerRuntimeMessage {
+  const message = value as Partial<WorkerRuntimeMessage>;
+  return (
+    onOurChannel(value) &&
+    typeof message.runtime === "object" &&
+    message.runtime !== null &&
+    typeof message.contextId === "string"
+  );
 }
 
 /**
@@ -130,6 +158,15 @@ export interface WorkerHookOptions {
   pageUrl: string;
   /** Where captures forwarded out of a worker go. Must not throw. */
   emit: (message: HookCapture | HookSkip) => void;
+  /**
+   * Where a worker's runtime reports go. Must not throw.
+   *
+   * Absent when runtime monitoring is off, in which case a worker's reports --
+   * if an older prelude sends any -- are dropped here rather than forwarded.
+   */
+  onRuntimeReport?: (report: RuntimeReport, contextId: string) => void;
+  /** Called when a worker is started, so fan-out can be counted. */
+  onWorker?: () => void;
   createObjectURL: (blob: Blob) => string;
   revokeObjectURL: (url: string) => void;
   /** Injected for tests; defaults to `setTimeout`. */
@@ -181,13 +218,15 @@ export function installWorkerHook(options: WorkerHookOptions): WorkerHook {
   /** Take our own messages out of the stream before the page can see them. */
   function interceptCaptures(worker: Worker): void {
     worker.addEventListener("message", (event: MessageEvent) => {
-      if (!isWorkerCaptureMessage(event.data)) return;
+      const data: unknown = event.data;
+      if (!onOurChannel(data)) return;
       // Registered before the page can attach a handler, so stopping immediate
       // propagation here means no page listener ever runs for this event. The
       // page did not send this message and must not observe it.
       event.stopImmediatePropagation();
       try {
-        emit(event.data.capture);
+        if (isWorkerCaptureMessage(data)) emit(data.capture);
+        else if (isWorkerRuntimeMessage(data)) options.onRuntimeReport?.(data.runtime, data.contextId);
       } catch {
         /* A broken transport must not surface as a page-visible error. */
       }
@@ -200,6 +239,13 @@ export function installWorkerHook(options: WorkerHookOptions): WorkerHook {
       const rawOptions = args[1] as WorkerOptions | undefined;
 
       if (!enabled || !isInstrumentable(specifier, pageUrl)) {
+        // Counted even when it is not instrumented: how many workers a page
+        // starts is a fact about the page, not about our coverage of it.
+        try {
+          options.onWorker?.();
+        } catch {
+          /* Counting must never cost the page its worker. */
+        }
         return Reflect.construct(target, args, newTarget);
       }
 
@@ -220,6 +266,7 @@ export function installWorkerHook(options: WorkerHookOptions): WorkerHook {
         });
         shimUrl = createObjectURL(new Blob([shim], { type: "text/javascript" }));
         worker = Reflect.construct(target, [shimUrl, ...args.slice(1)], newTarget) as Worker;
+        options.onWorker?.();
       } catch {
         // Content Security Policy is the expected failure: a policy that
         // forbids `blob:` workers rejects the shim at construction. Falling

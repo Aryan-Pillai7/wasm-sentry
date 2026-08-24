@@ -101,6 +101,14 @@ function sandbox(): Sandbox {
     URL,
     Blob,
     EventTarget,
+    // The runtime monitor reads the clock and asks for a timer every second.
+    performance,
+    setInterval: () => 0,
+    clearInterval: () => {},
+    navigator: { hardwareConcurrency: 8 },
+    WebSocket: class extends EventTarget {
+      send(): void {}
+    },
     ArrayBuffer,
     Uint8Array,
     Promise,
