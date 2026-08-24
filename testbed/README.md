@@ -11,6 +11,11 @@ npm run testbed     # emits the fixtures and serves this directory on :8080
 Then open <http://localhost:8080>, click **Run all**, and open the Wasm-Sentry
 popup.
 
+**Run all** deliberately skips the grind button. That one pegs every core for
+twenty-five seconds, which makes the machine unpleasant to use at exactly the
+moment you are trying to read the popup, so it is run on its own when you want
+it.
+
 ## Two pages
 
 `index.html` is the full path: the extension must be loaded and reloaded, and
