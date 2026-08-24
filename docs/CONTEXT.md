@@ -4,7 +4,8 @@ Read this first if you are picking the project up on a different machine or
 after a break. It is the handover note: current state, how to run things,
 conventions in force, the gotchas that waste time, and what to do next.
 
-Last updated after the dashboard landed.
+Last updated after JavaScript analysis landed, which finished the roadmap. The
+only outstanding item is the labelled corpus described under "Next steps".
 
 ---
 
@@ -15,25 +16,37 @@ Last updated after the dashboard landed.
 | 1 | Capture layer | complete, tested |
 | 2 | Disassembly + static analysis | complete, tested |
 | 3 | Heuristics + Privacy Scorecard | complete, tested |
-| 4 | Runtime behavioural monitoring | not started |
-| 5 | ML classifier | not started |
-| — | JS bundle / supply-chain analysis | not started |
-| — | Backend SQLite + job queue | not started (health endpoint only) |
+| 4 | Runtime behavioural monitoring | complete, tested |
+| 5 | ML classifier | pipeline complete and tested; no model, no corpus |
+| — | JS bundle / supply-chain analysis | complete, tested, opt-in |
+| — | Backend SQLite + job queue | complete, tested |
 
-Beyond the three phases, the extension has since gained a dashboard, desktop
-notifications, generated icons, and a testbed page. 91 tests, all green: 41 in
-`core`, 50 in `extension`.
+Beyond the phases, the extension has gained a dashboard, desktop notifications,
+generated icons, a testbed page, CI, and worker instrumentation that closed the
+last capture blind spot. 234 tests, all green: 100 in `core`, 121 in `extension`, 13 in `backend`.
 
 ```
+JavaScript and supply-chain analysis, behind the consent design that blocked it
+Phase 5: the classifier pipeline, and no model to ship with it
+Backend Phase 2: SQLite, a job queue, and the upload API
+Phase 4: measure what a module does, not only what it is
+Fix the nested-worker capture race the browser found, and document it
+Carry the capture hooks into Web Workers
+Run build, typecheck, lint and tests in CI
+Make `npm run lint` pass, and stop dashboard polls overlapping
+Regenerate the lockfile so a checkout installs on any platform
+--- everything above landed after the handover ---
 d83f408  Add a dashboard so the extension can show its own work
 61ef96f  Notify on high-risk pages, and give the extension a real icon
-f805222  Fix the popup hanging on "Reading capture log" and make failures diagnosable
+f805222  Fix the popup hanging on "Reading capture log"
 71f0dfc  Add an end-to-end testbed exercising every capture path
-4c18abf  Remove stray file and replace the Vite template extension README
 3b337b3  Phase 3: heuristic detection and the Privacy Scorecard
 0f562de  Phase 2: static analysis pipeline -- parser, CFG, WAT and features
 d42780a  Phase 1: rebuild the capture layer around main-world API hooks
 ```
+
+Hashes are omitted above the line because they change with a rebase; `git log`
+has them, and the subjects are what you are looking for anyway.
 
 Commit messages are deliberately detailed. `git log` is the design record.
 
@@ -46,6 +59,12 @@ npm install          # one install at the root; workspaces handle the rest
 npm run build        # core -> extension -> backend
 npm test             # core + extension
 ```
+
+CI runs `npm ci`, build, typecheck, lint, fixtures and tests on Node 22.12 and
+24 for every push and pull request (`.github/workflows/ci.yml`). The fixture
+step is load-bearing: `extension/test/pipeline.test.ts` skips itself when
+`testbed/miner.wasm` is absent, so without it the end-to-end test would report
+green while covering nothing.
 
 Load the extension: `chrome://extensions` → Developer mode → **Load unpacked** →
 select `extension/dist`. **Chrome 111+ required** (`"world": "MAIN"` content
@@ -66,14 +85,52 @@ notification permission level, a live activity feed, and every module seen.
 npm run testbed      # emits fixtures, serves testbed/ on :8080
 ```
 
-Seven buttons, one per capture path — streaming, in-memory buffer, compile +
-instantiate, the `Module` constructor, a `blob:` URL, a dedup check, and a Web
-Worker (the known blind spot). Expect a red badge showing 4, one notification
-for `miner.wasm` at 63/100, and the feed filling in live.
+Ten buttons. Nine are capture paths — streaming, in-memory buffer, compile +
+instantiate, the `Module` constructor, a `blob:` URL, a dedup check, a classic
+Worker, a module Worker, and a Worker inside a Worker. Expect a red badge, one
+notification for `miner.wasm` at 63/100, the feed filling in live, and the
+worker modules tagged **in a Worker** rather than listed as not analysed.
+
+The tenth is Phase 4: **grind for 25s across every core**. It starts one worker
+per two cores running a fixture that really spins, and after twenty seconds
+`sustained-kernel.wasm` should move from its ambiguous static verdict to
+`mining-runtime-corroborated`, with the popup showing the seconds executed and
+the core-equivalents behind it.
+
+### Checking capture in a real browser, without installing anything
+
+```bash
+npm run build && npm run testbed        # then open /standalone.html
+```
+
+`standalone.html` loads the built `extension/dist/injector.js` with a plain
+script tag — exactly what the extension injects at `document_start` — and checks
+every capture path itself. It covers only the first hop, but that is the hop
+worker instrumentation lives in.
+
+It can be driven headlessly, which is how the nested-worker race in gotcha 8 was
+found. **Do not use `--virtual-time-budget`**: virtual time does not advance
+inside worker threads, so the page's timeouts fire instantly while the workers
+never get real time to load, and every worker check fails for a reason that does
+not exist. Drive it over CDP and wait on wall-clock time instead:
+
+```bash
+chrome --headless=new --remote-debugging-port=9222 --user-data-dir=/tmp/p about:blank
+# then navigate to http://localhost:8080/standalone?auto, wait ~15s,
+# and read document.getElementById("log").innerText
+```
+
+Expect five captures from the worker checks: one `page`, and four `worker` — a
+classic worker, a module worker, a worker nested inside one, and that nested
+worker's own parent. The runtime checks then start one grinding worker per two
+cores and assert that each reports under its own identity and that the busiest
+measured close to a full core of execution.
 
 ### Command line
 
 ```bash
+npm run dev -w backend                                          # the upload API on :3000
+npm run train     -w @wasm-sentry/core -- corpus/ --out m.json  # train + evaluate a classifier
 npm run inspect   -w @wasm-sentry/core -- path/to/module.wasm   # full report + risk
 npm run calibrate -w @wasm-sentry/core -- path/to/module.wasm   # kernel candidates
 npm run fixtures                                                # regenerate testbed/*.wasm
@@ -103,7 +160,16 @@ core/                    @wasm-sentry/core -- zero runtime dependencies
     base64.ts            transport encoding for chrome.runtime messages
     analysis.ts          analyzeWasm(): entry point, never throws
     report.ts            summarise(): full analysis -> storable record
-    heuristics.ts        the 12 detection rules
+    heuristics.ts        12 static + 5 runtime rules, + the classifier's opinion
+    runtime.ts           runtime vocabulary; folding reports into features
+    js/features.ts       lexical scan; escape density is what separates
+                         minified from obfuscated
+    js/heuristics.ts     7 JavaScript and supply-chain rules
+    js/analysis.ts       analyzeJs(): never throws; summariseJs() keeps no source
+    ml/features.ts       versioned feature vector; order is part of the model
+    ml/model.ts          the model type, inference, and strict parsing
+    ml/train.ts          logistic regression, no dependencies
+    ml/evaluate.ts       k-fold, metrics, and the heuristic baseline
     scoring.ts           saturating score, bands, page scorecard
     wasm/
       reader.ts          bounds-checked LEB128 / vector reads
@@ -114,12 +180,18 @@ core/                    @wasm-sentry/core -- zero runtime dependencies
       features.ts        feature vector; kernel candidate selection
       wat.ts             WAT rendering as a view over our own decode
   test/fixtures.ts       hand-assembled modules, validated by the real engine
-  scripts/               inspect, calibrate, emit-fixtures
+  scripts/               inspect, calibrate, emit-fixtures, train-model
 
 extension/
   src/
     content/injector.ts       MAIN-world entry
+    content/runtime-monitor.ts  export timing, timer drift, per-context reports
+    content/socket-hooks.ts   WebSocket open/message counts (counts only)
+    content/script-hooks.ts   inline scripts + `new Function`; opt-in, no source stored
     content/capture-hooks.ts  interception logic (globals injected -> testable)
+    content/worker-hooks.ts   Worker constructor wrapper, shim source, message intake
+    content/worker-prelude.ts what runs inside a worker; bundled to a string
+    content/worker-scope.ts   puts the worker's base URL back after the blob swap
     content/bridge.ts         ISOLATED-world relay, base64 encodes
     background/service-worker.ts  trust boundary, analysis, scorecard, badge
     background/alerts.ts      notification policy as a pure function
@@ -127,13 +199,18 @@ extension/
     popup/load-report.ts      message fetching with every failure mode named
     dashboard/                cross-tab activity, status, modules, settings
     shared/protocol.ts        message types + caps
-    utils/db.ts               IndexedDB (schema v3)
+    utils/db.ts               IndexedDB (schema v5)
     utils/settings.ts         local-first defaults
-  scripts/build-scripts.mjs   esbuild for the three script entries
+  scripts/build-scripts.mjs   esbuild; builds the prelude to a string first
   scripts/make-icons.mjs      renders + encodes the PNG icons
   test/pipeline.test.ts       end-to-end through the real service worker
+  test/worker-prelude.test.ts builds the prelude and runs it in a fake worker scope
+  test/runtime-monitor.test.ts  what the page sees, and what measuring costs
 
-backend/                 health endpoint only, ESM + tsx
+backend/                 SQLite + job queue + upload API, ESM + tsx
+  src/app.ts               routes, built as a factory so tests drive the real ones
+  src/db/                  node:sqlite store and schema
+  src/queue.ts             one job at a time, resumable across restarts
 testbed/                 local page exercising every capture path
 docs/                    architecture, detection, api-spec, this file
 ```
@@ -177,65 +254,84 @@ docs/                    architecture, detection, api-spec, this file
 6. **Unpacked extensions get no permission prompt.** New manifest permissions
    apply silently on reload. Chrome's own OS-level notification permission is
    separate — the dashboard status panel reports it.
-7. **Web Workers are a capture blind spot** — content scripts do not run there.
-   Reported as `network-only` notes rather than hidden.
-8. **IndexedDB is at schema v3.** Upgrades drop all stores rather than migrating;
-   the contents are a cache of things the browser can observe again. Bump
-   `DB_VERSION` in `extension/src/utils/db.ts` when stores change.
+7. **Workers are instrumented, and that is the one intrusive thing we do.**
+   Content scripts do not run in workers, so each worker is started from a
+   `blob:` shim that loads the hooks and then the real script. Three things to
+   know before touching it: the worker's base URL has to be restored
+   (`worker-scope.ts`), module workers need their startup messages buffered
+   because their loads are awaited, and the fallback path must never run after
+   the worker exists — that once produced two live workers. A CSP that forbids
+   `blob:` workers still leaves a `network-only` note, as before.
+8. **A worker terminated the instant it replies can lose its capture.** The
+   streaming capture is posted after the cloned response has been read, which
+   can land after instantiation finishes, so the reply and the capture race.
+   Found in the real browser, not in a unit test — the testbed fixtures wait a
+   beat before `terminate()` so they demonstrate capture rather than the race.
+   Nothing is silently lost: the network observer still notes the module.
+9. **IndexedDB is at schema v5.** Upgrades drop all stores rather than
+   migrating; the contents are a cache of things the browser can observe again.
+   Bump `DB_VERSION` in `extension/src/utils/db.ts` when stores change.
+10. **A `Proxy` over an instance's exports throws.** The namespace is frozen with
+    a null prototype, so a `get` trap may not return anything but the target's
+    own value -- the invariant check raises a `TypeError` inside the page's first
+    call into its own module. `runtime-monitor.ts` reproduces the namespace
+    instead. Do not "simplify" it back to a proxy.
+11. **The backend needs Node 22.13+**, which is where `node:sqlite` stopped
+    needing a flag. That is the floor CI runs, and why the matrix starts there
+    rather than at 22.12.
+12. **Bump `FEATURE_SCHEMA_VERSION` whenever the feature vector changes** —
+    added, removed, reordered or rescaled. Inference refuses a model trained on
+    a different version rather than scoring the wrong columns, which is the one
+    failure here that produces confident nonsense with no way to notice.
+13. **JavaScript analysis is off by default, and that is the design, not an
+    oversight.** It is the only capture path that reads something the page has
+    not published to anyone else. External script contents are never fetched,
+    source is never stored, and `eval` is deliberately not hooked -- wrapping it
+    turns direct eval into indirect eval and changes scoping.
+14. **Runtime thresholds are not corpus-calibrated, and the docs say so.** The
+    mechanism is measured; the lines drawn on it are conservative. If you tune
+    them, `docs/detection.md` has to change with them, and no detection rate may
+    be claimed either way.
 
 ---
 
 ## Next steps, in order
 
-### Phase 4 — runtime behavioural monitoring
+### The corpus — the only thing Phase 5 is waiting on
 
-The most valuable remaining work, because calibration established that **static
-density cannot separate mining from compression** (see `docs/detection.md`) —
-runtime CPU is what settles it. This is also what MINOS does.
+The pipeline is built, tested and documented. What does not exist is a labelled
+corpus, and it is not a code problem.
 
-1. Extend the main-world injector to sample:
-   - wall-clock time inside exported Wasm functions (wrap the instantiated
-     module's `exports` object);
-   - `requestAnimationFrame` / `performance.now()` drift as a CPU-saturation
-     proxy;
-   - `Worker` constructor calls and their count (worker fan-out);
-   - `WebSocket` opens and message volume, attributed to the frame.
-2. Attribute samples back to the artifact hash — the instantiation that produced
-   the exports is the same call the hook already sees, so carry the hash through.
-3. Add runtime rules to `heuristics.ts`, taking a `RuntimeFeatures` input
-   alongside `ModuleFeatures`.
-4. Feed them into the existing `assessRisk()`. The aggregation already takes an
-   arbitrary finding list, so nothing there needs redesigning.
-5. Expect `mining-corroborated` to become far stronger: kernel plus sustained CPU
-   is close to conclusive.
+```
+corpus/
+  benign/       WasmBench, npm packages, anything you can vouch for
+  malicious/    verified samples -- the hard half
+```
 
-Watch out for: sampling must not itself burn CPU, and a busy page is not a mining
-page — use sustained load over tens of seconds, not a spike.
+```bash
+npm run train -w @wasm-sentry/core -- corpus/ --out extension/public/model.json
+```
 
-### Phase 5 — ML classifier
+That cross-validates against the heuristics on the same folds, prints both rows,
+and says plainly when the model loses to the rules. Drop the model into
+`extension/public/`, rebuild, and `classifier-opinion` starts contributing;
+without one, nothing in the extension changes.
 
-Blocked on data, not code.
-
-- **A labelled corpus is the blocker.** WasmBench for benign; malicious samples
-  are the hard part and may need requesting from the authors of the cryptojacking
-  papers in the synopsis. Until then no detection rate can be claimed honestly,
-  and none is claimed anywhere in this repository.
-- The feature pipeline is already done: `ModuleFeatures` plus the per-function
-  rows is the training input, and `opcodeCounts` gives the opcode-sequence view
-  Deep-Wasm uses.
-- Train outside the extension; ship inference only.
-- **The heuristics are the baseline to beat.** Report the model against them, not
-  against nothing.
+- **Benign samples are easy. Malicious ones are the blocker.** They may need
+  requesting from the authors of the cryptojacking papers in the synopsis.
+- **The baseline to beat is now much stronger than it was**, because it includes
+  runtime evidence. A classifier trained on static features alone is being
+  compared against something that can see more than it can, and it should be
+  expected to lose. That is a fair comparison, not a rigged one — but say which
+  it is when reporting.
+- **Do not ship a model trained on a small corpus** to make the phase look
+  finished. The trainer warns below fifty modules and the CLI disclaims every
+  run; those exist to be listened to.
 
 ### Smaller items
 
-- Backend Phase 2: SQLite, job queue, `POST /api/artifacts` taking raw bytes as
-  `application/octet-stream`. Spec already written in `docs/api-spec.md`.
-- JS bundle analysis — needs its own consent design first; shipping page scripts
-  anywhere is a bigger privacy question than Wasm modules.
-- Hook the `Worker` constructor to inject the capture script into workers,
-  closing gotcha 7.
-- CI: GitHub Actions running `npm ci && npm run build && npm test`.
+Nothing on the original list is outstanding. What is left is the corpus above,
+and whatever the next person finds.
 
 ---
 

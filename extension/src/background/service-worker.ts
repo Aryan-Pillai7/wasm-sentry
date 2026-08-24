@@ -13,14 +13,23 @@
  * would not survive.
  */
 import {
+  accumulateRuntime,
+  analyzeJs,
+  analyzeScriptInventory,
   analyzeWasm,
   base64ToBytes,
   buildScorecard,
   sha256,
   sniff,
   summarise,
+  summariseJs,
 } from "@wasm-sentry/core";
-import type { RiskAssessment, RiskLevel } from "@wasm-sentry/core";
+import type {
+  ClassifierModel,
+  RiskAssessment,
+  RiskLevel,
+  RuntimeFeatures,
+} from "@wasm-sentry/core";
 import {
   addEvent,
   addNote,
@@ -31,17 +40,29 @@ import {
   getAllArtifacts,
   getAnalyses,
   getArtifacts,
+  getArtifactBytes,
+  getExternalScriptsByTab,
   getNotesByTab,
   getRecentEvents,
+  getRuntimeByTab,
+  getScriptsByTab,
   getSightingsByTab,
   hasAnalysis,
+  hasScript,
+  linkFingerprint,
   prune,
+  resolveFingerprints,
   saveAnalysis,
+  saveExternalScript,
+  saveRuntimeReport,
+  saveScript,
   upsertArtifact,
 } from "../utils/db";
-import type { SightingRow } from "../utils/db";
+import type { RuntimeRow, SightingRow } from "../utils/db";
 import { getSettings, setSettings } from "../utils/settings";
 import { decideAlert } from "./alerts";
+import { loadClassifier } from "./classifier";
+import { uploadArtifact } from "./upload";
 import { MAX_ARTIFACT_BYTES } from "../shared/protocol";
 import type {
   ActivityEvent,
@@ -49,7 +70,10 @@ import type {
   CaptureRequest,
   ExtensionMessage,
   ModuleRow,
+  RuntimeRequest,
+  ScriptRequest,
   SkipRequest,
+  TabScriptView,
   TabReport,
   TabArtifactView,
 } from "../shared/protocol";
@@ -97,6 +121,14 @@ async function handleCapture(
     now,
   );
 
+  // The page can only key its runtime samples by something the page can
+  // compute, and over plain http that cannot be a hash. Recording the join here
+  // is what lets a measurement find the artifact it belongs to.
+  if (message.fingerprint) {
+    await linkFingerprint(message.fingerprint, hash).catch(() => undefined);
+  }
+
+  const context = message.context ?? "page";
   const sighting: SightingRow = {
     hash,
     url: message.url,
@@ -105,6 +137,7 @@ async function handleCapture(
     frameId,
     source: "wasm-api",
     api: message.api,
+    context,
     timestamp: now,
   };
   await addSighting(sighting);
@@ -117,6 +150,7 @@ async function handleCapture(
     hash,
     size: bytes.length,
     api: message.api,
+    context,
     ...(isNew ? {} : { detail: "already seen" }),
   });
 
@@ -130,7 +164,7 @@ async function handleCapture(
   // parse; it is synchronous and budgeted, so this is bounded work, not a
   // reason to reach for a keepalive.
   if (!(await hasAnalysis(hash))) {
-    const analysis = summarise(hash, analyzeWasm(bytes));
+    const analysis = summarise(hash, analyzeWasm(bytes), undefined, await classifier());
     await saveAnalysis(analysis);
     console.log(
       `${LOG} analysed ${hash.slice(0, 12)} in ${analysis.elapsedMs}ms:`,
@@ -152,9 +186,49 @@ async function handleCapture(
     });
   }
 
+  // Deliberately after the local analysis and not awaited by it: uploading is
+  // opt-in, optional and remote, and none of those may delay the verdict the
+  // user is about to look at.
+  if (isNew) void maybeUpload(hash, bytes, message.pageUrl, tabId);
+
   const report = await refreshBadge(tabId);
   if (report) await maybeAlert(tabId, report).catch(() => undefined);
   return { ok: true, hash };
+}
+
+/** Send an artifact to the backend when the user has turned uploading on. */
+async function maybeUpload(
+  hash: string,
+  bytes: Uint8Array,
+  pageUrl: string,
+  tabId: number,
+): Promise<void> {
+  try {
+    const settings = await getSettings();
+    if (!settings.uploadEnabled) return;
+
+    const outcome = await uploadArtifact({ settings, hash, bytes });
+    if (outcome.status === "skipped") return;
+
+    // Recorded either way. A user who turned uploading on is entitled to see
+    // whether it is actually working, and a silent failure would leave them
+    // believing modules were being sent when nothing was.
+    await addEvent({
+      timestamp: Date.now(),
+      kind: outcome.status === "failed" ? "skipped" : "captured",
+      pageUrl,
+      tabId,
+      hash,
+      detail:
+        outcome.status === "uploaded"
+          ? `uploaded to the backend as ${outcome.jobId}`
+          : outcome.status === "known"
+            ? "the backend already had this module"
+            : `upload failed: ${outcome.reason}`,
+    });
+  } catch (error) {
+    console.warn(`${LOG} upload failed`, error);
+  }
 }
 
 async function handleSkip(
@@ -168,6 +242,7 @@ async function handleSkip(
     tabId: sender.tab?.id ?? -1,
     size: message.size,
     api: message.api,
+    context: message.context ?? "page",
     detail: message.reason,
   });
   await addNote({
@@ -180,6 +255,210 @@ async function handleSkip(
     timestamp: Date.now(),
   });
   return { ok: true };
+}
+
+/**
+ * The classifier, if one was packaged.
+ *
+ * None ships with this extension -- see `classifier.ts` -- so this resolves to
+ * `undefined` and the rules behave exactly as they did before it existed. It is
+ * awaited rather than passed in because the answer is cached after the first
+ * look, including the answer "there isn't one".
+ */
+function classifier(): Promise<ClassifierModel | undefined> {
+  return loadClassifier({
+    getURL: (path) => chrome.runtime.getURL(path),
+    fetchImpl: fetch,
+  }).catch(() => undefined);
+}
+
+/* ------------------------------------------------------------------ */
+/* JavaScript intake                                                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Take one observed script.
+ *
+ * Inline source is measured here and then dropped: what is written to storage
+ * is the measurements and the verdict, never the text. That is the whole
+ * consent design -- a script on an authenticated page can carry far more of
+ * somebody's private business than a compiled module does, so the extension
+ * keeps what it needs to explain a finding and nothing that could reconstruct
+ * the code.
+ *
+ * External scripts never arrive with contents at all. Only their origin,
+ * whether they are third-party and whether they are pinned.
+ */
+async function handleScript(
+  message: ScriptRequest,
+  sender: chrome.runtime.MessageSender,
+): Promise<{ ok: boolean; hash?: string }> {
+  const tabId = sender.tab?.id ?? -1;
+  const now = Date.now();
+
+  if (message.external) {
+    await saveExternalScript({
+      key: `${tabId}|${message.external.url}`,
+      tabId,
+      url: message.external.url,
+      thirdParty: message.external.thirdParty,
+      hasIntegrity: message.external.hasIntegrity,
+      injected: message.external.injected,
+      seenAt: now,
+    });
+    return { ok: true };
+  }
+
+  if (!message.inline) return { ok: false };
+
+  const { origin, source } = message.inline;
+  // Hashed here for the same reason modules are: identity is the content, and
+  // the same bootstrap script inlined on a hundred pages is analysed once.
+  const hash = await sha256(new TextEncoder().encode(source));
+
+  if (!(await hasScript(hash))) {
+    const analysis = summariseJs(hash, analyzeJs(source));
+    await saveScript({
+      hash,
+      tabId,
+      pageUrl: message.pageUrl,
+      origin,
+      byteLength: source.length,
+      analysis,
+      seenAt: now,
+    });
+
+    if ((analysis.risk?.score ?? 0) >= 25) {
+      await addEvent({
+        timestamp: now,
+        kind: "analysed",
+        pageUrl: message.pageUrl,
+        tabId,
+        hash,
+        size: source.length,
+        ...(analysis.risk ? { level: analysis.risk.level, score: analysis.risk.score } : {}),
+        detail: analysis.risk?.findings[0]?.title ?? "script analysed",
+      });
+    }
+  }
+
+  // The source goes no further than this function. Nothing below it, and
+  // nothing in storage, has a copy.
+  await refreshBadge(tabId);
+  return { ok: true, hash };
+}
+
+/* ------------------------------------------------------------------ */
+/* Runtime intake                                                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Take one context's account of how its modules are behaving, and re-score
+ * whatever it has something to say about.
+ *
+ * Re-running the whole assessment rather than patching the stored one is
+ * deliberate: `mining-runtime-corroborated` has to see the static kernel and
+ * the measured execution together, and a rule that only ever sees half of its
+ * inputs cannot produce the finding this phase exists for. The bytes are still
+ * in `blobs`, which is what makes re-analysis possible at all.
+ */
+async function handleRuntime(
+  message: RuntimeRequest,
+  sender: chrome.runtime.MessageSender,
+): Promise<{ ok: boolean; rescored?: number }> {
+  const tabId = sender.tab?.id ?? -1;
+
+  await saveRuntimeReport({
+    contextId: message.contextId,
+    tabId,
+    pageUrl: message.pageUrl,
+    report: message.report,
+    updatedAt: Date.now(),
+  });
+
+  const rescored = await rescoreTab(tabId);
+  if (rescored > 0) {
+    const report = await refreshBadge(tabId);
+    if (report) await maybeAlert(tabId, report).catch(() => undefined);
+  }
+  return { ok: true, rescored };
+}
+
+/** Fold every context's latest report for a tab into per-hash features. */
+async function runtimeByHash(tabId: number): Promise<Map<string, RuntimeFeatures>> {
+  const rows: RuntimeRow[] = await getRuntimeByTab(tabId);
+  if (rows.length === 0) return new Map();
+
+  const byFingerprint = accumulateRuntime(rows.map((row) => row.report));
+  const hashes = await resolveFingerprints([...byFingerprint.keys()]);
+
+  const byHash = new Map<string, RuntimeFeatures>();
+  for (const [fingerprint, features] of byFingerprint) {
+    const hash = hashes.get(fingerprint);
+    // A fingerprint we never captured bytes for is a module we cannot name.
+    // Dropping it is right: a measurement with nothing to attribute it to
+    // cannot become a finding about anything.
+    if (hash) byHash.set(hash, features);
+  }
+  return byHash;
+}
+
+/**
+ * Re-analyse the modules in a tab that now have runtime evidence.
+ *
+ * Only modules whose evidence has actually moved are re-run: the parse is
+ * bounded but not free, and a report arrives every ten seconds per context.
+ */
+async function rescoreTab(tabId: number): Promise<number> {
+  const runtime = await runtimeByHash(tabId);
+  if (runtime.size === 0) return 0;
+
+  const existing = await getAnalyses([...runtime.keys()]);
+  let rescored = 0;
+
+  for (const [hash, features] of runtime) {
+    const previous = existing.get(hash);
+    if (!previous?.ok) continue;
+    if (!worthRescoring(previous.runtime, features)) continue;
+
+    const bytes = await getArtifactBytes(hash);
+    if (!bytes) continue;
+
+    const analysis = summarise(hash, analyzeWasm(bytes), features, await classifier());
+    await saveAnalysis(analysis);
+    rescored++;
+
+    const before = previous.risk?.level;
+    const after = analysis.risk?.level;
+    if (after !== undefined && after !== before) {
+      await addEvent({
+        timestamp: Date.now(),
+        kind: "analysed",
+        pageUrl: "",
+        tabId,
+        hash,
+        ...(analysis.risk ? { level: analysis.risk.level, score: analysis.risk.score } : {}),
+        detail: `runtime evidence moved this from ${before ?? "unscored"} to ${after}`,
+      });
+    }
+  }
+
+  return rescored;
+}
+
+/**
+ * Whether new measurements are different enough to be worth a re-parse.
+ *
+ * Reports arrive every ten seconds per context and mostly say the same thing.
+ * Re-analysing on every one of them would burn the service worker's budget
+ * restating a verdict nobody asked to have restated.
+ */
+function worthRescoring(previous: RuntimeFeatures | undefined, next: RuntimeFeatures): boolean {
+  if (!previous) return true;
+  if (next.contextCount !== previous.contextCount) return true;
+  if (Math.abs(next.cpuShare - previous.cpuShare) >= 0.1) return true;
+  // Crossing the observation floor changes which rules can fire at all.
+  return previous.observedMs < 20_000 && next.observedMs >= 20_000;
 }
 
 /* ------------------------------------------------------------------ */
@@ -212,6 +491,7 @@ async function buildTabReport(tabId: number): Promise<TabReport> {
       url: entry.sighting.url,
       ...(entry.sighting.api ? { api: entry.sighting.api } : {}),
       source: entry.sighting.source,
+      ...(entry.sighting.context ? { context: entry.sighting.context } : {}),
       firstSeen: row.firstSeen,
       lastSeen: row.lastSeen,
       sightings: entry.count,
@@ -234,13 +514,41 @@ async function buildTabReport(tabId: number): Promise<TabReport> {
     .map((artifact) => artifact.analysis?.risk)
     .filter((risk): risk is RiskAssessment => risk !== undefined);
 
-  const pageUrl = sightings.at(-1)?.pageUrl ?? "";
+  // Counted before JavaScript joins the list: this is "modules seen but not
+  // analysed", and a script verdict added below would make it come out wrong.
   const unanalysed = artifacts.length - assessments.length + blindSpots.length;
+
+  // JavaScript, when the user has enabled it. Its verdicts join the same
+  // scorecard: a page's risk is a fact about the page, not about which of two
+  // analysers happened to produce the evidence.
+  const [scriptRows, externalRows] = await Promise.all([
+    getScriptsByTab(tabId),
+    getExternalScriptsByTab(tabId),
+  ]);
+
+  const scripts: TabScriptView[] = scriptRows
+    .map((row) => ({
+      hash: row.hash,
+      origin: row.origin,
+      byteLength: row.byteLength,
+      analysis: row.analysis,
+    }))
+    .sort((a, b) => (b.analysis.risk?.score ?? 0) - (a.analysis.risk?.score ?? 0));
+
+  const supplyChain =
+    externalRows.length > 0 ? analyzeScriptInventory(externalRows) : undefined;
+
+  for (const script of scripts) {
+    if (script.analysis.risk) assessments.push(script.analysis.risk);
+  }
+  if (supplyChain && supplyChain.findings.length > 0) assessments.push(supplyChain);
+
+  const pageUrl = sightings.at(-1)?.pageUrl ?? scriptRows[0]?.pageUrl ?? "";
 
   return {
     tabId,
     pageUrl,
-    scorecard: buildScorecard(pageUrl, assessments, unanalysed),
+    scorecard: buildScorecard(pageUrl, assessments, Math.max(0, unanalysed)),
     artifacts,
     notes: blindSpots.map((note) => ({
       url: note.url,
@@ -249,6 +557,8 @@ async function buildTabReport(tabId: number): Promise<TabReport> {
       ...(note.api ? { api: note.api } : {}),
       timestamp: note.timestamp,
     })),
+    ...(scripts.length > 0 ? { scripts } : {}),
+    ...(supplyChain ? { supplyChain } : {}),
   };
 }
 
@@ -311,6 +621,7 @@ async function buildActivityReport(): Promise<ActivityReport> {
     ...(row.level !== undefined ? { level: row.level } : {}),
     ...(row.score !== undefined ? { score: row.score } : {}),
     ...(row.detail !== undefined ? { detail: row.detail } : {}),
+    ...(row.context !== undefined ? { context: row.context } : {}),
   }));
 
   const lastCapture = eventRows.find((row) => row.kind === "captured");
@@ -445,6 +756,12 @@ chrome.runtime.onMessage.addListener((raw, sender, sendResponse) => {
         break;
       case "wasm-sentry:skipped":
         work = handleSkip(message, sender);
+        break;
+      case "wasm-sentry:runtime":
+        work = handleRuntime(message, sender);
+        break;
+      case "wasm-sentry:script":
+        work = handleScript(message, sender);
         break;
       case "wasm-sentry:tab-report":
         work = buildTabReport(message.tabId);

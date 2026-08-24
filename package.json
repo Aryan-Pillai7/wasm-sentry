@@ -10,14 +10,14 @@
   ],
   "scripts": {
     "build": "npm run build -w @wasm-sentry/core && npm run build -w extension && npm run build -w backend",
-    "test": "npm run test -w @wasm-sentry/core && npm run test -w extension",
+    "test": "npm run test -w @wasm-sentry/core && npm run test -w extension && npm run test -w backend",
     "lint": "npm run lint -w extension",
-    "typecheck": "tsc -b extension && tsc -p core/tsconfig.json --noEmit && tsc -p backend/tsconfig.json --noEmit",
-    "testbed": "tsx core/scripts/emit-fixtures.ts testbed && npx --yes serve testbed -l 8080",
+    "typecheck": "tsc -b extension && tsc -p core/tsconfig.json --noEmit && tsc -p backend/tsconfig.test.json",
+    "testbed": "tsx core/scripts/emit-fixtures.ts testbed && node scripts/prepare-testbed.mjs && npx --yes serve testbed -l 8080",
     "fixtures": "tsx core/scripts/emit-fixtures.ts testbed"
   },
   "engines": {
-    "node": ">=20.19"
+    "node": ">=22.12"
   },
   "devDependencies": {
     "esbuild": "^0.25.0",

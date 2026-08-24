@@ -71,7 +71,8 @@ five entry points through which a module can reach the engine:
 engine receives.
 
 **Cost.** Requires Chrome 111+. Content scripts do not run inside Web Workers,
-so a module compiled in a worker is a blind spot — handled in §2.6.
+so a module compiled in a worker is not seen by this hook — reported honestly in
+§2.6, and reached in §2.6a.
 
 ### 2.2 Never change what the page observes
 
@@ -123,6 +124,77 @@ analysed"*.
 **Why this matters:** the alternative is silently reporting a clean page. A
 security tool that under-reports its own coverage is worse than one that reports
 nothing.
+
+### 2.6a Carrying the hooks into Web Workers
+
+§2.6 above describes the blind spot as a reporting problem: content scripts do
+not run in workers, so a module compiled in one was recorded as `network-only`
+rather than analysed. That was the honest interim answer. It is not a good
+permanent one, because **worker fan-out is how one page saturates every core** --
+the modules most worth analysing are exactly the ones a worker would hold.
+
+**Decision.** Wrap the `Worker` constructor in the main world and start each
+worker from a `blob:` shim that loads the capture hooks first and the script the
+page asked for second.
+
+**Why a shim and not something less invasive.** There is nothing less invasive.
+`chrome.scripting` cannot target workers, worker scripts must be same-origin so
+a redirect to an extension-hosted script is refused, and re-fetching the module
+URL from the service worker is the design this project rejected in §2.1 for
+reasons that have not changed.
+
+**This is the one place the capture layer changes how a page loads its own
+code**, so the cost is worth stating precisely rather than glossing:
+
+1. **The worker's base URL moves to the blob.** Every relative URL the real
+   script resolves would silently point somewhere else, which is exactly the
+   observable change §2.2 forbids. `worker-scope.ts` puts it back: `location` is
+   redefined, and `importScripts`, `fetch`, `Request`, `XMLHttpRequest.open`,
+   `WebSocket`, `EventSource`, `Worker` and `sendBeacon` all resolve their
+   argument against the real script's URL first. Module workers need less of
+   this than classic ones — the real module is imported by URL, so its
+   `import.meta.url` and every dynamic `import()` inside it are already right.
+
+2. **Module workers cannot load synchronously.** `importScripts` does not exist
+   there, so the shim awaits two dynamic imports, and a `postMessage` arriving
+   in that window would find no handler registered and be dropped. The shim
+   buffers messages during startup and re-dispatches them in order. Classic
+   workers need none of this: `importScripts` is synchronous, so the real script
+   has run before the constructor's caller gets its worker back.
+
+3. **Our own messages must never reach the page.** Captures come back over
+   `postMessage` with a channel marker, and the interception listener is
+   attached at construction — before page code can hold the worker, let alone
+   add a handler — so `stopImmediatePropagation()` there means no page listener
+   ever runs for one of our events.
+
+4. **Content Security Policy can refuse a `blob:` worker.** Then the shim throws
+   at construction and the untouched worker is started instead. A page whose
+   worker does not start is a far worse outcome than a module not analysed.
+
+**The failure that shaped the code.** The first version wrapped the whole
+construct trap in one try/catch. Constructing a worker is not a pure act — it
+fetches and runs a script — so a failure *after* the worker existed was
+answered by constructing a second one, and the page's code ran twice. The
+fallback is now scoped to the steps that happen before the worker exists;
+anything failing after it is swallowed and costs only our own listener. A test
+pins it.
+
+**What only a real browser found.** The unit tests and the sandboxed prelude
+test both pass against a nested worker; a run in headless Chrome showed its
+capture never arriving. The cause was not in our code: a streaming capture is
+posted once the cloned response has been read, which can land after
+instantiation finishes, so the worker's reply and its capture race — and the
+consumer calling `terminate()` on the reply kills whichever is still in flight.
+It degrades to the network observer's "not analysed" note rather than
+disappearing, which is the behaviour §2.6 exists to guarantee.
+
+**Why it has an off switch when nothing else does.** Every other part of capture
+is unobservable by construction. This one is not, so `instrumentWorkers` exists.
+It cannot be consulted before the hook installs — `chrome.storage` is async and
+the hook must exist before the page's first line — so instrumentation is on by
+default and switched off a few milliseconds later by the bridge, taking full
+effect from the next navigation.
 
 ### 2.7 Format detection by magic bytes, never by URL or MIME type
 
@@ -195,6 +267,38 @@ a security tool's badge**, and would not survive Chrome Web Store review.
 Analysis therefore runs in the extension. The backend was cut back to a health
 endpoint rather than left as an endpoint that accepts artifacts and silently
 drops them.
+
+### 3.2 What the backend is for, now that it does something
+
+It stores artifacts and analyses them with **the same engine, unchanged** —
+which is the whole reason `core` has no runtime dependencies. A verdict computed
+on the server is the verdict the browser would have reached; `miner.wasm` scores
+63/100 in both. Two implementations would have been two threat models and no way
+to compare them.
+
+What that buys, for a user who opts in: artifacts survive across browsers and
+profiles, and a rule change can be re-run over everything ever seen without the
+browser having to observe those modules again.
+
+Three choices worth stating:
+
+- **`node:sqlite`, not a native module.** A backend that needs a compiler
+  toolchain to install is a backend nobody runs, and the built-in driver is
+  exactly as capable for a store this shape. It costs a Node floor of 22.13.
+- **One job at a time.** Analysis is CPU-bound and synchronous — the engine is
+  built that way so it can run inside an MV3 service worker — so two at once on
+  one thread finishes neither sooner and only makes the event loop worse.
+  Scaling means more processes, not more concurrency in the queue.
+- **The queue lives in SQLite, not in memory.** A restart resumes rather than
+  forgetting, and a job left `running` by a crash is re-queued on the next
+  start. Analysis is deterministic, so re-running one costs a parse and nothing
+  else — and the alternative is a job nobody will ever finish.
+
+`X-Artifact-Hash` is treated as a claim, not as identity: the bytes are hashed
+server-side regardless, exactly as they are in the service worker. The header is
+still checked, and a mismatch refused — not because the claim is dangerous, but
+because a mismatch means the two ends disagree about which module they are
+discussing.
 
 ---
 
@@ -387,6 +491,114 @@ almost every production build strips names, so it only matters as a multiplier.
 
 ---
 
+## 5a. Runtime monitoring (Phase 4)
+
+### 5a.1 Why this phase had to exist
+
+§5.1 ends on a measurement that no further static work could fix: a legitimate
+Rust image codec contains a 631-instruction loop that is 24.5% shifts and xors
+with no calls and no floating point, and it is **statically indistinguishable**
+from a hashing kernel. Compression, checksums and image filters all take that
+shape.
+
+The difference is not in the bytes. It is that one of them runs flat out for
+minutes. That is what this phase measures, and it is why `hash-loop-density` was
+capped below the high band until it arrived.
+
+### 5a.2 Timing the exports, and why not a Proxy
+
+To attribute execution to a module you have to be inside its calls, which means
+the page has to receive an exports namespace that is not the engine's own. This
+is the second and last place the extension does that, and it is a real cost.
+
+**A `Proxy` with a `get` trap does not work.** An instance's exports namespace is
+created with a null prototype and then *frozen*, so every property is
+non-configurable and non-writable, and a proxy over it may not return anything
+other than the target's own value -- the invariant check throws a `TypeError` on
+first access. That failure would surface inside the page's own code, at its
+first call into its own module. This was found by writing the proxy version
+first.
+
+**So the namespace is reproduced.** Same key order, same null prototype, frozen
+the same way, function exports replaced by timed wrappers that carry the
+original `name` and `length` (Emscripten reads `length` when building call
+shims), everything else -- memories, tables, globals -- passed through by
+identity. Wrappers are per instance, never cached by module: two instances of
+one module have different export functions, and a shared wrapper would call into
+the wrong one.
+
+### 5a.3 The measurement must not become the cost
+
+A module called a million times in a hot loop would spend more time in
+`performance.now()` than in its own body. So timing switches itself off after
+20,000 calls averaging under 0.05 ms -- a library being used, not a kernel being
+run. Counting continues, the accumulated total stops growing, and it is reported
+as `timingStopped` so every finding built on it can say out loud that the number
+is a floor. A long-running kernel never trips this: its mean is nowhere near the
+threshold, which is precisely the shape worth timing.
+
+### 5a.4 Timer lateness instead of a CPU reading
+
+There is no API that reports CPU use to a content script. A periodic timer that
+arrives late is direct evidence that something held the thread, costs one
+closure per second, needs no permission, and works identically inside a worker.
+
+It is never read on its own: a backgrounded tab is throttled to whole-second
+ticks, which would look identical. It appears only as corroboration alongside
+measured execution time.
+
+### 5a.5 Core-equivalents, not a percentage
+
+Each context's share of its own observed window is capped at 1, and the capped
+shares are summed. A module saturating four workers reports about 4.0.
+
+Averaging would have been the obvious choice and would have been wrong: it
+hides fan-out behind an idle main thread, and fan-out across every core is the
+shape this whole phase is looking for.
+
+### 5a.6 Cumulative reports, keyed by context
+
+Reports are the whole state of a context, not a delta, and the service worker
+keeps the latest per context and folds them together. A worker that is
+terminated between reports takes nothing with it, and a duplicate cannot
+double-count -- neither of which is true of deltas, and both of which happen
+constantly (terminated workers, a service worker Chrome killed mid-flight).
+
+### 5a.7 Fingerprints, because the page cannot hash
+
+Runtime samples can only be keyed by something the page can compute, and over
+plain http that cannot be SHA-256 -- `crypto.subtle` is undefined there (§2.10).
+So samples carry the page-side FNV-1a fingerprint, the service worker records
+the fingerprint-to-hash join when it accepts a capture, and a report about a
+fingerprint it never saw bytes for is **dropped rather than guessed at**. A
+measurement with nothing to attribute it to cannot become a finding about
+anything.
+
+### 5a.8 Re-scoring, not patching
+
+When the evidence moves, the module is re-analysed from its stored bytes and run
+through the same rule pass. Patching the stored verdict would have been cheaper
+and would not work: `mining-runtime-corroborated` has to see the static kernel
+and the measured execution *together*, and a rule that only ever sees half its
+inputs cannot produce the finding this phase exists for.
+
+Re-scoring is gated on the evidence actually having moved -- a report arrives
+every ten seconds per context, and most of them say the same thing.
+
+### 5a.9 What was measured, and what was not
+
+The mechanism is measured. Driven in headless Chrome against a fixture that
+really spins: 8 of 8 grinding workers reported under their own identities, and
+the busiest measured 12.0s of execution inside a 12.0s window -- a full core
+each.
+
+**The thresholds are not calibrated against real mining samples**, because there
+is still no labelled corpus. They are conservative bounds, and `detection.md`
+says so in the same words. Claiming otherwise would be the unsupported number
+this project has refused to claim everywhere else.
+
+---
+
 ## 6. Testing
 
 ### 6.1 Self-validating fixtures
@@ -413,14 +625,35 @@ interception logic is tested directly against a synthetic WebAssembly namespace
 — no browser, no DOM shim. Capture correctness is the foundation everything else
 stands on: a module never seen is a module never ruled on.
 
-### 6.4 Counts
+### 6.4 The worker prelude is tested as a built artifact
 
-91 tests. 41 in `core` (sniffing, hashing, base64, parser, decoder, CFG,
-features, heuristics, scoring) and 50 in `extension` (capture hooks, storage
-against a real IndexedDB, popup message handling, alert policy, formatting, and
-an end-to-end run through the real service worker).
+Everything else is unit tested against injected fakes, which proves the logic
+and says nothing about the bundle. The worker prelude never runs as an extension
+script at all: it is bundled to a string, published as a `blob:` URL, and
+evaluated inside a worker no test can reach. A broken bundle — a stray reference
+to `window`, an import that did not get inlined — would leave every unit test
+green while no module in any worker was ever captured again.
 
-### 6.5 No detection rate is claimed
+So one test builds it exactly as the build script does and evaluates it in a
+`vm` context shaped like a worker global scope, then asserts that a compile
+inside it emits a capture, that the base URL was restored, and that a nested
+worker is instrumented from the same prelude blob.
+
+### 6.5 Counts
+
+234 tests. 100 in `core` (sniffing, hashing, base64, parser, decoder, CFG,
+features, heuristics, scoring, runtime accumulation and rules, the JavaScript
+scanner calibrated against real bundles, the feature vectoriser, the trainer,
+inference and the evaluation harness), 121 in
+`extension` (capture hooks, worker instrumentation and base compensation, the
+built worker prelude, the runtime monitor and socket counting, opt-in upload,
+model loading, script observation and its privacy boundary, storage against a
+real IndexedDB, popup message handling, alert policy,
+formatting, and an end-to-end run through the real service worker), and 13 in
+`backend` (the real routes over a real socket against an in-memory database,
+plus the queue's failure paths against a stub store).
+
+### 6.6 No detection rate is claimed
 
 Deliberately. An honest figure needs a labelled corpus (WasmBench plus verified
 malicious samples) that this project does not yet have. The synthetic fixture
@@ -430,27 +663,196 @@ criticises.
 
 ---
 
-## 7. Things deliberately not done yet
+## 7. The classifier (Phase 5)
+
+### 7.1 What was blocked, and what was not
+
+The classifier was always last, and for a stated reason: without the feature
+pipeline it has nothing to read, and without the heuristics there is nothing to
+compare it against. Both now exist. What still does not is **a labelled corpus**,
+and that is not a code problem — benign modules are easy (WasmBench, npm), and
+verified malicious samples are the hard half.
+
+So the corpus is the deliverable that is missing, and everything around it is
+the deliverable that is not: vectoriser, trainer, k-fold evaluation against the
+baseline, a CLI, and the socket in the extension a model drops into. **No model
+ships with this repository**, and none of the numbers anywhere in it is a
+detection rate.
+
+### 7.2 Logistic regression, not something stronger
+
+Not because it is the best thing that could sit here. Because of what this
+project already committed to: every finding states the numbers that produced it,
+and a rule that cannot be interrogated does not ship.
+
+A linear model keeps that promise. The reason for a score is a list of columns
+and how much each one moved it, in the same units as the module's own
+measurements — so `classifier-opinion` can name them, and a reader can check
+them against the disassembly. A gradient-boosted ensemble or a small network
+would very likely score better and would return a number with nothing a
+developer can check, which is the drawback in the literature review that this
+whole codebase is a response to.
+
+It is also sixty numbers. It serialises to a few kilobytes of JSON, inference is
+a dot product, and it adds no dependency to a package whose lack of dependencies
+is the reason the same engine runs in three places. Shipping a second
+WebAssembly runtime inside a WebAssembly security tool to run a model would be
+both ironic and a real attack surface.
+
+### 7.3 The feature schema is versioned, and mismatches are refused
+
+A vector is meaningless without knowing what column 34 was. The schema is a
+named, ordered, versioned list; the model records the version it was trained on;
+and inference **throws** rather than scoring the wrong columns.
+
+This is not defensive tidiness. A model quietly reading the wrong inputs
+produces confident nonsense, and there is no way to notice it from the output —
+which is the single worst failure mode available to this component.
+
+Everything is bounded, too: counts are log-scaled, ratios are already 0..1, and
+a non-finite value is replaced with zero before it can leave the vectoriser. One
+`NaN` poisons every weight it touches during training and does it silently.
+
+### 7.4 The evaluation is the part that matters
+
+A model with 0.94 accuracy sounds like an achievement until the twelve
+hand-written rules it replaced score 0.95 on the same folds.
+
+So `crossValidate` scores both on **the same held-out modules**, and the
+comparison is a field of the result rather than something a report can omit. The
+CLI prints both rows and a verdict, and when the model loses it says so in those
+words: *ship the rules, not the model*. When it merely ties, it still says ship
+the rules — the rules are explainable and the model is not.
+
+Three smaller decisions inside it:
+
+- **Standardisation is fitted inside each fold.** Fitting it over the whole
+  corpus first leaks the test set's distribution into training. It is the
+  easiest mistake to make here and the hardest to notice afterwards.
+- **Class weighting is on by default.** A corpus that is 95% benign lets a model
+  reach 95% accuracy by answering "benign" every time — a useless detector with
+  a good headline number. A test pins that the weighting finds the positives.
+- **Accuracy is never reported alone**, and AUC gives ties half credit, because
+  a rule-based baseline produces many identical scores and a tie-blind
+  implementation would flatter it.
+
+### 7.5 A corpus with one class is refused, loudly
+
+`train()` throws on a single-class corpus and `crossValidate` throws when a fold
+would train on one. A model fitted to one class learns to answer that class
+while reporting excellent accuracy. Failing with a confusing error message is
+cheaper than shipping that model.
+
+The CLI also warns below fifty modules, and prints, every single run:
+
+> No detection rate is claimed by this repository. These numbers describe the
+> corpus you supplied and nothing else.
+
+---
+
+## 7a. JavaScript analysis, and the consent design that blocked it
+
+### 7a.1 Why this waited
+
+The synopsis names JavaScript bundles alongside WebAssembly, and this was
+listed as "needs its own consent design first" for four phases. That was not
+procrastination: **a page's scripts can carry far more of somebody's private
+business than a compiled module does.** An internal build, an authenticated
+application, a session token inlined into a bootstrap script. §3.1 already
+established that shipping modules off by default would be an exfiltration
+channel wearing a security tool's badge; scripts make the same argument louder.
+
+So the design came first, and it is four rules:
+
+1. **Off by default** — the only capture path that is. Every other one sees
+   things the page has already published to itself.
+2. **Nothing is re-fetched.** External scripts are never read. Their origin,
+   third-partyness and Subresource Integrity are facts already in the markup,
+   and they are what the supply-chain rule needs.
+3. **What is read is only what the page assembled itself** — inline source and
+   `new Function` bodies. That code never crossed the network, so nothing else
+   could have seen it, and it is where an obfuscated loader lives.
+4. **Source is measured and discarded.** Measurements and verdicts are stored;
+   the text is not, and JavaScript is never uploaded whatever the upload setting
+   says. A test asserts a secret in a script's source cannot be found anywhere
+   in the resulting report.
+
+### 7a.2 `eval` is deliberately not hooked
+
+It is the obvious thing to wrap and it cannot be wrapped honestly. A *direct*
+`eval(...)` evaluates in its caller's scope, and that depends on the callee
+resolving to the intrinsic — so replacing the global silently turns every direct
+call in the page into an indirect one evaluating in global scope. That is a
+change to what the page observes, which §2.2 forbids.
+
+Almost nothing is lost. These rules are lexical: `eval(atob("..."))` is visible
+in the source of the script containing it, and inline source is read in full.
+The remaining gap is an eval inside an external script, whose contents are
+deliberately never read anyway.
+
+`new Function` *is* wrapped, because a Proxy over it changes no semantics and
+its body can be built from a decoded string that appears nowhere in the source.
+
+### 7a.3 The calibration problem is inverted
+
+On the WebAssembly side almost nothing looks like a mining kernel. Here almost
+everything looks obfuscated: every production bundle is minified to one enormous
+line of one-character identifiers and opaque literals. **A rule that flags
+"minified" flags the entire web.**
+
+Measuring real bundles found the one measurement that separates them:
+
+| Source | Escape density |
+|---|---|
+| `react-dom.production.js` | 0.000% |
+| `typescript.js` (8.9 MB) | 0.006% |
+| `esquery.esm.min.js` | 0.131% |
+| `ajv.min.js` (119,360-char line) | 0.928% |
+| hex-escaped payload | **54.8%** |
+| packed payload | **98.9%** |
+
+A minifier has no reason to escape anything; an obfuscator escapes nearly
+everything, because the point is that the source should not be readable. Line
+length and entropy both fail here — `ajv.min.js` has the longest line measured
+and is entirely legitimate, and every sample sits between 4.7 and 5.4 bits of
+entropy.
+
+The threshold sits at 5%, in the middle of a two-order-of-magnitude gap. The
+corpus lives in `core/test/js.test.ts` as assertions, so changing a threshold
+breaks a test rather than invalidating a table.
+
+### 7a.4 A regex found the wrong kind of limit
+
+The first literal scanner was the obvious regular expression,
+`(["'`])((?:\.|(?!)[^\
+]){16,})`. It works until it meets a
+multi-megabyte string literal -- an inlined asset, which is not exotic -- at
+which point V8's backtracking stack overflows and the entire analysis is lost.
+It is replaced by a linear scan: no backtracking, no recursion, fixed cost per
+character. A test pins a 5 MB literal.
+
+---
+
+## 8. Things deliberately not done yet
 
 | Not done | Why |
 |---|---|
-| ML classifier | Needs the Phase 2 feature pipeline (done) *and* a labelled dataset (not obtained). Heuristics are the baseline it has to beat — building the model first leaves nothing to compare against. |
-| Runtime monitoring | Phase 4. It is the signal that settles the mining question, per §5.1. |
-| JS bundle analysis | Needs its own consent story: shipping page scripts anywhere is a bigger privacy question than Wasm modules. |
-| SQLite + job queue | Only meaningful once upload is opt-in-able and there is deep analysis worth queueing. |
+| A shipped model | The pipeline is built and tested; the labelled corpus is not obtained. A model trained on anything less would produce confident numbers with nothing behind them. |
 | Element/data segment contents | Only needed for indirect-call resolution; segment *counts* are already a useful structural feature. |
 
 ---
 
-## 8. At a glance
+## 9. At a glance
 
-- **7-stage pipeline**, 3 of 5 phases complete
+- **7-stage pipeline**, all 5 phases built, plus JavaScript and supply-chain analysis; the classifier ships no model, because no labelled corpus exists to train one honestly
 - **0 runtime dependencies** in the analysis core
 - **643 KB / 1,879 functions parsed in 165 ms**; 2.4 MB / 975k instructions in 399 ms
 - **0 warnings, 0 undecodable function bodies** on both real-world modules
-- **~38 KB** added to the extension bundle by the whole analysis engine
-- **91 tests**, all green — 41 in `core`, 50 in `extension`
-- **12 detection rules**, every one citing evidence, 5 citing literature
+- **58 KB** service worker and **19 KB** page hook, minified — the whole
+  analysis engine, the rules and the runtime monitor included
+- **234 tests**, all green — 100 in `core`, 121 in `extension`, 13 in `backend`
+- **25 detection rules** — 12 static, 5 runtime, 7 JavaScript and supply-chain,
+  1 classifier — every one citing evidence, 12 citing literature
 - Calibration: benign real-world modules score **6** and **21** out of 100; the
   full mining shape scores **63**
-- **No detection rate is claimed**, here or anywhere in the repository — see §6.5
+- **No detection rate is claimed**, here or anywhere in the repository — see §6.6

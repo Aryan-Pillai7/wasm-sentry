@@ -1,5 +1,7 @@
 # Wasm-Sentry
 
+[![CI](https://github.com/abhay-codes07/wasm-sentry/actions/workflows/ci.yml/badge.svg)](https://github.com/abhay-codes07/wasm-sentry/actions/workflows/ci.yml)
+
 An in-browser auditor for WebAssembly modules and JavaScript bundles.
 
 Wasm-Sentry watches the code a page actually executes — including modules that
@@ -7,18 +9,22 @@ never touch the network — disassembles it, and explains what it does in terms 
 person can act on. It is built as a Chrome MV3 extension with a shared analysis
 engine that runs unchanged in the browser, in Node, and in tests.
 
-> Status: Phase 3 of 5. Capture, disassembly, static analysis, heuristic
-> detection and the Privacy Scorecard are complete and tested; runtime
-> monitoring and the ML classifier are next. See
-> [`docs/architecture.md`](docs/architecture.md) for the full pipeline.
+> Status: all five phases built, plus JavaScript and supply-chain analysis.
+> Capture, disassembly, static analysis, heuristic detection, the Privacy
+> Scorecard, runtime behavioural monitoring and the classifier pipeline are
+> complete and tested. **No trained model ships**, because no labelled corpus
+> exists to train one honestly, and no detection rate is claimed anywhere in
+> this repository. See [`docs/architecture.md`](docs/architecture.md) for the
+> full pipeline.
 
 ## Layout
 
 | Path | What it is |
 |---|---|
-| `core/` | `@wasm-sentry/core` — format sniffing, hashing, the Wasm parser, CFG builder, WAT renderer and feature extractor. Zero runtime dependencies. |
-| `extension/` | Chrome MV3 extension: main-world capture hook, service worker, popup. |
-| `backend/` | Optional Node service for opt-in deep analysis. |
+| `core/` | `@wasm-sentry/core` — format sniffing, hashing, the Wasm parser, CFG builder, WAT renderer, feature extraction, the detection rules, the JavaScript scanner and the classifier pipeline. Zero runtime dependencies. |
+| `extension/` | Chrome MV3 extension: main-world capture hooks, worker instrumentation, runtime monitoring, script observation, service worker, popup and dashboard. |
+| `backend/` | Optional Node service: SQLite store, job queue and the opt-in upload API. |
+| `testbed/` | A local page exercising every capture path, plus a harness that checks them against the built injector with no extension installed. |
 | `docs/` | [Architecture](docs/architecture.md), [design decisions](docs/design-decisions.md), [detection rules](docs/detection.md), [API spec](docs/api-spec.md) and a handover [context note](docs/CONTEXT.md). |
 
 The three packages are npm workspaces, so a single `npm install` at the root
@@ -29,7 +35,7 @@ wires them together and `@wasm-sentry/core` resolves by name from both consumers
 ```bash
 npm install
 npm run build      # core -> extension -> backend
-npm test           # core + extension unit tests
+npm test           # core + extension + backend
 ```
 
 Then load the extension:
@@ -47,6 +53,13 @@ The backend is optional and off by default:
 npm run dev -w backend    # http://localhost:3000/health
 ```
 
+It stores artifacts in SQLite, queues them, and analyses them with the same
+engine the extension runs — so a verdict computed there is the verdict the
+browser would have reached. Nothing reaches it unless you turn on
+`uploadEnabled`, because the modules a page executes can be private and a tool
+that ships them off by default is an exfiltration channel wearing a badge. See
+[`docs/api-spec.md`](docs/api-spec.md).
+
 ## How capture works
 
 WebAssembly reaches the engine through five entry points, and Wasm-Sentry wraps
@@ -59,6 +72,15 @@ misses everything that never crosses the network — `blob:` and `data:` URLs,
 and bytes pulled over XHR or a WebSocket and compiled from memory, which is a
 known cryptojacking pattern — and it cannot guarantee the bytes it analyses are
 the bytes that ran. Hooking the API gets the exact buffer the engine received.
+
+Content scripts do not run inside Web Workers, so the same hooks are carried in:
+each worker is started from a small shim that installs them and then loads the
+script the page asked for. Worker fan-out is how one page saturates every core,
+which makes a worker the natural place to hide a mining kernel. The swap is
+built to be invisible — the worker's base URL is restored, messages that arrive
+during startup are buffered, and our own traffic never reaches a page listener —
+and a worker whose shim is refused by Content Security Policy runs untouched and
+is reported as not analysed. Turn it off with the `instrumentWorkers` setting.
 
 Artifacts are identified by the SHA-256 of their contents, never by URL, so one
 module served under a thousand cache-busted URLs is analysed once.
@@ -76,6 +98,26 @@ the numbers that triggered it — and combined into a banded Privacy Scorecard.
 Thresholds are calibrated against real compiled output rather than guessed; see
 [`docs/detection.md`](docs/detection.md), including the false positive that
 reshaped the design.
+
+## Watching it run
+
+Static analysis has a hard limit, and this project measured exactly where it is:
+a legitimate image codec contains a loop that is *statically indistinguishable*
+from a hashing kernel. Compression, checksums and image filters all take that
+shape. What separates them is that one of them runs flat out for minutes.
+
+So modules are also watched: time spent inside their exported functions, how
+late the context's own timers arrive, how many contexts are running the same
+module, and how busy any socket is. A module whose static shape is ambiguous and
+which then runs at four core-equivalents for half a minute is no longer
+ambiguous. Sustained execution on its own never is enough — a video codec
+saturates a core honestly — so escalation still requires the static kernel too.
+
+Timing switches itself off for modules called in a hot loop, where measuring
+each call would cost more than the call; the total it reports then says out loud
+that it is a floor. The runtime thresholds are **not** calibrated against real
+mining samples, and [`docs/detection.md`](docs/detection.md) says so: the
+mechanism is measured, the lines drawn on it are conservative.
 
 You can point the parser at any module from the command line:
 
@@ -102,6 +144,48 @@ finding rather than just the score, and is de-duplicated per site and module so
 a reload never notifies twice. Turn it off with the `notifyOnHighRisk` setting.
 
 The popup is only needed for per-page detail.
+
+## JavaScript, and the switch it sits behind
+
+The project's other half, and the one that waited longest — not for code, but
+for a consent design. **A page's scripts can carry far more of your business
+than a compiled module can**: an internal build, a signed-in application, a
+token inlined into a bootstrap script. So JavaScript analysis is the one capture
+path that is **off until you turn it on**, and when it is on:
+
+- external scripts are never fetched or read — only their origin and whether
+  they are pinned with Subresource Integrity, which the markup already says;
+- what *is* read is what the page assembled itself: inline source and
+  `new Function` bodies, which never crossed the network;
+- source is measured and thrown away. Only the measurements and the verdict are
+  stored, and JavaScript is never uploaded whatever the upload setting says.
+
+Calibrating it was the inverse of the WebAssembly problem. Almost nothing
+compiled looks like a mining kernel; almost all production JavaScript looks
+obfuscated — minified to one enormous line of one-character identifiers. The
+measurement that actually separates them is **escape density**: `ajv.min.js` has
+a 119,360-character line and 0.93% escapes, while an obfuscated payload runs
+55–99%, because a minifier shortens code and an obfuscator hides it.
+
+## The classifier
+
+A logistic regression over the same feature vector the rules read — trained
+offline, shipped as JSON, inference by dot product. Linear on purpose: the
+reason for a score is a list of columns and how much each one moved it, which is
+the same standard every rule here is held to. "The model said so" is not.
+
+**No model is shipped.** Training one needs a corpus of benign and
+verified-malicious modules that this project does not have; everything around
+that corpus is built and tested. Point the trainer at your own:
+
+```bash
+npm run train -w @wasm-sentry/core -- corpus/ --out extension/public/model.json
+```
+
+It cross-validates against the heuristics **on the same folds** and says plainly
+when the model loses to them — which, for a small corpus, is the likely and
+correct outcome. The rules are explainable and the model is not, so a tie means
+ship the rules.
 
 ## Privacy
 

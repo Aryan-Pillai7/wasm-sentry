@@ -1,0 +1,11 @@
+{
+  // Type-checking only. The build config emits, and `rootDir` there is `src`,
+  // so tests cannot be in its program -- but they still have to be checked, and
+  // with the same strictness as the code they exercise.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "include": ["src/**/*", "test/**/*"]
+}

@@ -128,6 +128,7 @@ function Activity({ events, now }: { events: ActivityEvent[]; now: number }): Re
                 <td className="mono">{event.hash ? event.hash.slice(0, 10) : "—"}</td>
                 <td className="size">{event.size !== undefined ? formatBytes(event.size) : ""}</td>
                 <td className="detail">
+                  {event.context === "worker" && <span className="chip">worker</span>}
                   <LevelChip
                     {...(event.level !== undefined ? { level: event.level } : {})}
                     {...(event.score !== undefined ? { score: event.score } : {})}
@@ -169,6 +170,35 @@ function ModuleCard({ module, now }: { module: ModuleRow; now: number }): React.
 
       <div className="module-body">
         {risk && <p className="headline">{risk.headline}</p>}
+
+        {module.analysis?.runtime && (
+          <dl className="facts">
+            <div>
+              <dt>observed</dt>
+              <dd>{(module.analysis.runtime.observedMs / 1000).toFixed(0)}s</dd>
+            </div>
+            <div>
+              <dt>executing</dt>
+              <dd>{(module.analysis.runtime.wasmTimeMs / 1000).toFixed(1)}s</dd>
+            </div>
+            <div>
+              <dt>cores</dt>
+              <dd>{module.analysis.runtime.cpuShare.toFixed(2)}</dd>
+            </div>
+            <div>
+              <dt>contexts</dt>
+              <dd>{module.analysis.runtime.contextCount}</dd>
+            </div>
+            <div>
+              <dt>calls</dt>
+              <dd>{module.analysis.runtime.callCount}</dd>
+            </div>
+            <div>
+              <dt>timer lag</dt>
+              <dd>{module.analysis.runtime.meanDriftMs.toFixed(0)}ms</dd>
+            </div>
+          </dl>
+        )}
 
         {summary && (
           <dl className="facts">
@@ -235,10 +265,28 @@ const TOGGLES: Array<{ key: string; label: string; description: string }> = [
     description: "Raises a desktop notification for the high and critical bands only.",
   },
   {
+    key: "instrumentWorkers",
+    label: "Analyse WebAssembly inside Web Workers",
+    description:
+      "Carries the capture hooks into workers, which is where a miner would put its kernel. It is the only setting that changes how a page loads its own code, so turn it off if a site misbehaves; the change applies from the next page load.",
+  },
+  {
+    key: "monitorRuntime",
+    label: "Measure how modules behave once they run",
+    description:
+      "Times the exported functions a module hands the page, which is what separates a hashing kernel from an image codec. Timing switches itself off for modules called in a hot loop, so the measurement never becomes the cost.",
+  },
+  {
     key: "trackNetworkSightings",
     label: "Record blind spots",
     description:
       "Notes Wasm seen on the network that the page hook could not reach, such as modules compiled inside a Web Worker.",
+  },
+  {
+    key: "analyseJavaScript",
+    label: "Analyse JavaScript as well as WebAssembly",
+    description:
+      "Off by default, and the only capture path that is. It reads the source of scripts the page wrote itself, which on a signed-in page can hold far more of your business than a compiled module does. External scripts are never fetched or read — only their origin and whether they are pinned. Source is measured and thrown away; it is never stored and never uploaded.",
   },
   {
     key: "uploadEnabled",
@@ -291,7 +339,11 @@ function Settings({
 function Dashboard(): React.JSX.Element {
   const [report, setReport] = useState<ActivityReport | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [now, setNow] = useState(Date.now());
+  // Every relative time on the page is rendered against this one clock reading,
+  // taken when the report arrived, so a row cannot say "2s ago" while the row
+  // under it says "3s ago" for the same instant. Zero until the first report
+  // lands, which is also the point at which anything using it starts rendering.
+  const [now, setNow] = useState(0);
 
   const load = useCallback(async () => {
     try {
@@ -310,10 +362,25 @@ function Dashboard(): React.JSX.Element {
     }
   }, []);
 
+  // Chained timeouts rather than setInterval: the next poll is scheduled only
+  // once the previous one has answered, so a slow or sleeping service worker
+  // cannot accumulate a backlog of overlapping requests that all resolve at
+  // once and fight over the same state.
   useEffect(() => {
-    void load();
-    const timer = setInterval(() => void load(), POLL_MS);
-    return () => clearInterval(timer);
+    let live = true;
+    let timer = 0;
+
+    const tick = async (): Promise<void> => {
+      if (!live) return;
+      await load();
+      if (live) timer = self.setTimeout(() => void tick(), POLL_MS);
+    };
+
+    timer = self.setTimeout(() => void tick(), 0);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
   }, [load]);
 
   const update = useCallback(

@@ -37,6 +37,100 @@ Twelve weak hints cannot add up to an accusation.
 | `stripped-binary` | 4 | No name section. Normal for production builds; only meaningful as a multiplier. |
 | `incomplete-coverage` | 0 | Functions that could not be decoded or were skipped for budget. Contributes no score — it qualifies the ones that do. |
 
+## Runtime rules
+
+Static rules score a module the moment it is captured. These score it again once
+it has been watched long enough for its behaviour to mean something, through the
+same aggregation and the same evidence requirement.
+
+| Rule | Weight | What it measures |
+|---|---|---|
+| `mining-runtime-corroborated` | 45 | A static compute kernel **and** sustained execution: the finding this phase exists for. Escalated further by fan-out, timer starvation or socket traffic. |
+| `sustained-execution` | 28 | At least 0.5 core-equivalents of execution over at least 20 seconds of observation. |
+| `worker-fan-out` | 20 | The same module executing in at least half the machine's cores' worth of contexts. |
+| `persistent-socket-traffic` | 12 | Ten or more socket messages alongside at least five seconds of execution. |
+| `runtime-not-yet-observed` | 0 | Watched for under 20 seconds. Contributes no score — it says the runtime rules have not had long enough to mean anything. |
+
+**Twenty seconds, not two.** A page is legitimately busy for a few seconds all
+the time: starting a game, decoding an image, recalculating a sheet. Sustained
+execution is a different claim from a spike and the threshold is what makes it
+one.
+
+**Core-equivalents, not a percentage.** Each context's share is capped at 1 and
+the capped shares are summed, so a module saturating four workers reports about
+4.0. Averaging would hide fan-out behind an idle main thread, and fan-out is
+exactly the shape being looked for.
+
+**Sustained execution alone cannot reach the high band.** A video codec, a game
+and a physics engine all saturate a core honestly. `sustained-execution` is
+weighted so that it cannot on its own accuse anything; escalation requires the
+static kernel too, which is the same corroboration-not-accumulation rule the
+static side already followed.
+
+## JavaScript rules
+
+Opt-in, and calibrated against the opposite problem. Ordinary compiled
+WebAssembly looks nothing like a mining kernel; ordinary production JavaScript
+looks *exactly* like obfuscated JavaScript to any naive test.
+
+| Rule | Weight | What it measures |
+|---|---|---|
+| `js-known-miner-family` | 45 | Names a known browser mining family. |
+| `js-mining-pool-endpoint` | 35 | A `stratum://` or pool-shaped socket address. A bare `wss://` is not matched — every chat application opens one. |
+| `js-decoded-code-execution` | 30 | Runtime evaluation **and** base64 decoding together. Either alone is ordinary. |
+| `js-miner-bootstrap-shape` | 25 | Three or more of: WebAssembly calls, Worker construction, a `hardwareConcurrency` read, a socket. |
+| `js-obfuscated-source` | 20 | Escape density above 5%. |
+| `js-injects-remote-script` | 8 | Injects script elements. Every tag manager does this; it is context, not an accusation. |
+| `js-third-party-unpinned` | 6 | Third-party scripts with no Subresource Integrity, from markup alone. |
+
+### Calibration
+
+Measured against real production bundles in this repository's own
+`node_modules`, and against payloads built the way an obfuscator writes them:
+
+| Source | Size | Escape density | `eval` | `atob` |
+|---|---|---|---|---|
+| `react-dom.production.js` | 6 KB | 0.000% | 0 | 0 |
+| `esquery.esm.min.js` | 36 KB | 0.131% | 0 | 0 |
+| `ajv.min.js` | 117 KB | 0.928% | 0 | 0 |
+| `typescript.js` | 8.9 MB | 0.006% | 0 | 0 |
+| hex-escaped payload | 0.4 KB | **54.8%** | 1 | 1 |
+| packed payload | 6.3 KB | **98.9%** | 1 | 0 |
+
+**Escape density is the separator, not line length or entropy.** `ajv.min.js`
+has a 119,360-character line and is entirely legitimate; every real bundle sits
+between 4.7 and 5.4 bits of entropy, as does obfuscated code. A minifier
+shortens code; an obfuscator hides it, and hiding it means escaping it.
+
+The threshold is 5%: 5.4x above the worst real bundle and 11x below the mildest
+obfuscated sample. Not one of the four real bundles calls `eval` or `atob` at
+all, which is what makes `js-decoded-code-execution` safe at weight 30.
+
+These measurements live in `core/test/js.test.ts` as assertions, not only in
+this table, so a threshold change breaks a test rather than quietly invalidating
+a document nobody re-reads.
+
+## The classifier
+
+One more rule exists and does not fire, because no model ships with this
+repository.
+
+| Rule | Weight | What it measures |
+|---|---|---|
+| `classifier-opinion` | 18 | A trained logistic regression scores the module above 0.6. Its evidence names the columns that moved the score and the corpus it was trained on. |
+
+Eighteen, below `hash-loop-density`, permanently. A model is an opinion about a
+module; every other rule here is a measurement of one. The project's position is
+that a verdict a user cannot interrogate is a verdict they cannot act on, and
+"the model said so" is exactly that verdict — so the classifier may raise a
+question and never answer one alone.
+
+Training needs a labelled corpus this project does not have. The pipeline around
+it is complete and documented in [`design-decisions.md`](design-decisions.md)
+§7; `npm run train -w @wasm-sentry/core -- <corpus>` cross-validates any corpus
+you supply **against the heuristics on the same folds**, and says plainly when
+the model loses to them.
+
 ## Scoring
 
 Raw score is `Σ (weight × confidence)`, then saturated:
@@ -76,6 +170,27 @@ npm run inspect -w @wasm-sentry/core -- path/to/module.wasm
 npm run calibrate -w @wasm-sentry/core -- path/to/module.wasm
 ```
 
+### What is and is not calibrated at runtime
+
+The static thresholds in this document were measured against real compiled
+output. **The runtime thresholds were not calibrated against real mining
+samples**, because this project still has no labelled corpus, and saying
+otherwise would be exactly the unsupported number the literature review
+criticises.
+
+What they are is bounded by measurement of the mechanism. Driving the built
+extension in headless Chrome against a fixture that really spins:
+
+| Measurement | Observed |
+|---|---|
+| Grinding workers, one per two cores | 8 of 8 reported, each under its own context identity |
+| Execution measured in the busiest worker | 12.0s inside a 12.0s window — a full core |
+| Instrumentation overhead on a hot-loop module | timing self-disables after 20,000 calls averaging under 0.05 ms |
+
+So the pipeline measures what it claims to measure, to the resolution the rules
+need. Whether 0.5 core-equivalents over 20 seconds is the right line for real
+cryptojacking in the wild is an open question, and it is written here as one.
+
 ### What calibration changed
 
 The first version of the kernel detector ranked candidate loops by
@@ -110,7 +225,24 @@ sustained CPU is the signal that settles the question, and it arrives in Phase 4
   samples) that this project does not yet have. The synthetic miner fixture in
   `core/test/fixtures.ts` proves the rules fire on the shape they target; it
   does not prove a detection rate.
-- **Static analysis only.** A module that fetches its kernel at runtime, or
-  gates it behind a delay, looks benign here until runtime monitoring lands.
-- **Web Workers are a blind spot for capture**, so a module compiled inside one
-  is reported as `network-only` rather than analysed.
+- **Runtime thresholds are not corpus-calibrated.** See above. The mechanism is
+  measured; the lines drawn on it are conservative rather than fitted.
+- **A module gated behind a long delay is still missed.** Runtime monitoring
+  watches from page load; a kernel that waits ten minutes before starting is
+  observed only if the tab is still open when it does.
+- **A worker terminated mid-capture loses that capture.** A streaming capture is
+  posted once the cloned response has been read, which can land after the module
+  has finished instantiating — so a page that calls `terminate()` the instant its
+  worker reports back can kill a capture already in flight. It degrades rather
+  than disappears: the network observer still records the module as
+  `network-only`, so the report says "not analysed" instead of implying a clean
+  page.
+- **JavaScript analysis reads only what the page wrote itself.** External
+  script contents are never fetched, so a payload delivered inside a third-party
+  bundle is seen as an unpinned third-party script and not as its contents.
+  `eval` is not hooked either, for a reason given in `script-hooks.ts`.
+- **A worker whose shim is refused stays a blind spot.** Modules compiled inside
+  a Web Worker are analysed now — the hooks are carried in by a shim the
+  extension starts the worker from — but a Content Security Policy that forbids
+  `blob:` workers rejects that shim, and those workers fall back to running
+  untouched and being reported as `network-only`.

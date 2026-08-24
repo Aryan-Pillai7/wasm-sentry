@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import { analyzeWasm } from "../src/analysis.js";
 import { evaluateHeuristics } from "../src/heuristics.js";
 import type { Finding } from "../src/heuristics.js";
+import { listRules } from "../src/heuristics.js";
+import { evaluateJsHeuristics, evaluateScriptInventory } from "../src/js/heuristics.js";
+import { extractJsFeatures } from "../src/js/features.js";
 import { assessRisk, buildScorecard, coverageOf, worstLevel } from "../src/scoring.js";
 import { summarise } from "../src/report.js";
 import { benignModule, minerLikeModule, syntheticMinerModule } from "./fixtures.js";
@@ -140,4 +143,41 @@ test("a page rolls up to its worst module", () => {
 test("an empty page says nothing was found rather than nothing was checked", () => {
   assert.match(buildScorecard("https://x.test/", [], 0).headline, /No WebAssembly/);
   assert.match(buildScorecard("https://x.test/", [], 3).headline, /not analysed/);
+});
+
+test("the rule counts the documentation claims are the rule counts that exist", () => {
+  // `design-decisions.md` states these in its summary, and a summary nobody can
+  // check is a summary that goes stale. It already had: it said twelve rules
+  // long after there were twenty-five.
+  const rules = listRules();
+  const byKind = (kind: string): number => rules.filter((rule) => rule.kind === kind).length;
+
+  assert.equal(byKind("static"), 12, "static rules");
+  assert.equal(byKind("runtime"), 5, "runtime rules");
+  assert.equal(byKind("model"), 1, "the classifier's opinion");
+
+  // The JavaScript rules are a separate list, because they read a different
+  // feature vector. Counted here so the documented total covers them.
+  const everything =
+    `var m=new CoinHive.Anonymous("k");eval(atob("${"QUJD".repeat(20)}"));` +
+    `new WebSocket("wss://xmr-pool.test/stratum");new Worker("w.js");` +
+    `navigator.hardwareConcurrency;WebAssembly.instantiate(b);` +
+    `document.write("<script src=x>");` +
+    // Literal backslash-x pairs, which is what an obfuscator emits. Written
+    // this way because a real escape here would be the character it encodes.
+    `${String.fromCharCode(92)}x68${String.fromCharCode(92)}x69`.repeat(200);
+  const jsRuleIds = new Set(evaluateJsHeuristics(extractJsFeatures(everything)).map((f) => f.id));
+  const supplyChainIds = evaluateScriptInventory([
+    { url: "https://cdn.other.test/a.js", thirdParty: true, hasIntegrity: false, injected: false },
+  ]).map((finding) => finding.id);
+  for (const id of supplyChainIds) jsRuleIds.add(id);
+
+  assert.equal(jsRuleIds.size, 7, `JavaScript rules: ${[...jsRuleIds].join(", ")}`);
+  assert.equal(rules.length + jsRuleIds.size, 25, "the documented total");
+
+  const cited =
+    rules.filter((rule) => rule.reference !== undefined).length +
+    evaluateJsHeuristics(extractJsFeatures(everything)).filter((f) => f.reference !== undefined)
+      .length;
+  assert.equal(cited, 12, "rules citing literature");
 });

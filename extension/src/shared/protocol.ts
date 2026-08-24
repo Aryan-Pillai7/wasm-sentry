@@ -2,8 +2,11 @@ import type {
   ArtifactAnalysis,
   ArtifactKind,
   CaptureSource,
+  JsArtifactAnalysis,
   PageScorecard,
+  RiskAssessment,
   RiskLevel,
+  RuntimeReport,
   WasmApi,
 } from "@wasm-sentry/core";
 
@@ -22,6 +25,15 @@ import type {
  */
 export const CAPTURE_CHANNEL = "wasm-sentry:capture:v1";
 
+/**
+ * Where a capture was intercepted.
+ *
+ * Worth carrying all the way to the popup: "compiled inside a Web Worker" was
+ * a blind spot until the worker hook landed, and a report that cannot say which
+ * modules came from workers cannot show that the blind spot is closed.
+ */
+export type CaptureContext = "page" | "worker";
+
 /** Hard ceiling on a single captured artifact, before base64 expansion. */
 export const MAX_ARTIFACT_BYTES = 16 * 1024 * 1024;
 
@@ -37,6 +49,7 @@ export interface InjectorCaptureMessage {
   pageUrl: string;
   size: number;
   bytes: Uint8Array;
+  context?: CaptureContext;
 }
 
 /** Sent from the isolated content script to the service worker. */
@@ -48,6 +61,15 @@ export interface CaptureRequest {
   size: number;
   /** Artifact bytes, base64 encoded -- see `@wasm-sentry/core` base64 notes. */
   bytesB64: string;
+  context?: CaptureContext;
+  /**
+   * The page-side fingerprint of these bytes.
+   *
+   * Not trusted for anything -- the service worker hashes the bytes itself --
+   * but recorded, because runtime samples can only be keyed by something the
+   * page can compute, and over plain http that cannot be a hash.
+   */
+  fingerprint?: string;
 }
 
 /** Reported when an artifact was seen but deliberately not captured. */
@@ -58,6 +80,40 @@ export interface SkipRequest {
   pageUrl: string;
   size: number;
   reason: "too-large" | "rate-limited" | "read-failed";
+  context?: CaptureContext;
+}
+
+/**
+ * A context's periodic account of how the modules in it are behaving.
+ *
+ * Cumulative rather than incremental: a context that is killed between reports
+ * -- a terminated worker, a navigation -- would otherwise take its last delta
+ * with it, and a duplicate would double-count. The service worker keeps the
+ * latest report per context and folds them together.
+ */
+export interface RuntimeRequest {
+  type: "wasm-sentry:runtime";
+  /** Stable for the life of the reporting context, so reports supersede. */
+  contextId: string;
+  pageUrl: string;
+  report: RuntimeReport;
+}
+
+/**
+ * A piece of JavaScript the page assembled and ran, or the metadata of one it
+ * loaded. Only sent when the user has enabled JavaScript analysis.
+ *
+ * Inline source travels to the service worker, is measured there and is *not*
+ * stored: what persists is the measurements and the verdict. External scripts
+ * are metadata only and their contents are never read at all.
+ */
+export interface ScriptRequest {
+  type: "wasm-sentry:script";
+  pageUrl: string;
+  /** Present for source the page assembled itself. */
+  inline?: { origin: "inline" | "injected-inline" | "Function"; source: string };
+  /** Present for a script the page loaded by URL. Never carries its contents. */
+  external?: { url: string; thirdParty: boolean; hasIntegrity: boolean; injected: boolean };
 }
 
 /** Popup asking the service worker what it has seen in a given tab. */
@@ -90,6 +146,8 @@ export interface ClearAllRequest {
 export type ExtensionMessage =
   | CaptureRequest
   | SkipRequest
+  | RuntimeRequest
+  | ScriptRequest
   | TabReportRequest
   | PingRequest
   | ActivityRequest
@@ -114,12 +172,22 @@ export interface TabArtifactView {
   /** How it reached us the last time we saw it in this tab. */
   api?: WasmApi;
   source: CaptureSource;
+  /** Whether the last sighting was in the page or inside a Web Worker. */
+  context?: CaptureContext;
   firstSeen: number;
   lastSeen: number;
   /** Times seen in this tab (not globally). */
   sightings: number;
   /** Static analysis, once it has run. Absent means still queued. */
   analysis?: ArtifactAnalysis;
+}
+
+/** One analysed piece of JavaScript, as the popup receives it. */
+export interface TabScriptView {
+  hash: string;
+  origin: "inline" | "injected-inline" | "Function";
+  byteLength: number;
+  analysis: JsArtifactAnalysis;
 }
 
 /** Everything the popup needs to render one tab. */
@@ -130,6 +198,10 @@ export interface TabReport {
   scorecard: PageScorecard;
   artifacts: TabArtifactView[];
   notes: Array<{ url: string; reason: string; size: number; api?: WasmApi; timestamp: number }>;
+  /** Analysed JavaScript. Empty unless the user enabled it. */
+  scripts?: TabScriptView[];
+  /** The supply-chain verdict over this page's external scripts, if any. */
+  supplyChain?: RiskAssessment;
 }
 
 /** One line of the activity feed, as the dashboard receives it. */
@@ -143,6 +215,7 @@ export interface ActivityEvent {
   level?: RiskLevel;
   score?: number;
   detail?: string;
+  context?: CaptureContext;
 }
 
 /** A module in the all-sites listing. */

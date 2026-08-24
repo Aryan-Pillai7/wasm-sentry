@@ -15,6 +15,11 @@
  *  - `events` is an append-only activity log across all tabs, capped. It exists
  *    so the dashboard can show that the extension is working continuously
  *    rather than leaving the user to infer it.
+ *  - `runtime` holds the latest report from each reporting context, and
+ *    `fingerprints` maps the page-side fingerprint a report is keyed by to the
+ *    content hash everything else is keyed by. The page cannot compute the
+ *    hash -- `crypto.subtle` is undefined over plain http -- so the join has to
+ *    happen here.
  */
 import type {
   ArtifactAnalysis,
@@ -23,9 +28,11 @@ import type {
   RiskLevel,
   WasmApi,
 } from "@wasm-sentry/core";
+import type { JsArtifactAnalysis, RuntimeReport } from "@wasm-sentry/core";
+import type { CaptureContext } from "../shared/protocol";
 
 const DB_NAME = "wasm-sentry";
-const DB_VERSION = 3;
+const DB_VERSION = 5;
 
 /** Upper bounds on locally retained artifact bytes. */
 const MAX_STORED_ARTIFACTS = 300;
@@ -54,6 +61,13 @@ export interface SightingRow {
   frameId: number;
   source: CaptureSource;
   api?: WasmApi;
+  /**
+   * Page world or inside a Web Worker. Optional rather than required: rows
+   * written before worker instrumentation existed have no value for it, and an
+   * IndexedDB store holds whatever shape it was written with. Absent reads as
+   * "page", which is what those rows were.
+   */
+  context?: CaptureContext;
   timestamp: number;
 }
 
@@ -75,6 +89,60 @@ export interface NoteRow {
   timestamp: number;
 }
 
+/**
+ * The latest runtime report from one context.
+ *
+ * Keyed by context rather than appended, because reports are cumulative: the
+ * newest from a context replaces the last, so a context that dies takes nothing
+ * with it and a duplicate cannot double-count. `fingerprints` maps what the
+ * page could compute to what the service worker hashed.
+ */
+export interface RuntimeRow {
+  contextId: string;
+  tabId: number;
+  pageUrl: string;
+  report: RuntimeReport;
+  updatedAt: number;
+}
+
+/** What a page-side fingerprint turned out to be, once the bytes were hashed. */
+export interface FingerprintRow {
+  fingerprint: string;
+  hash: string;
+  seenAt: number;
+}
+
+/**
+ * An analysed piece of JavaScript.
+ *
+ * Note what is absent: the source. A script on an authenticated page can carry
+ * far more of somebody's private business than a compiled module does, so what
+ * persists is the measurements and the verdict -- enough to explain a finding,
+ * and not enough to reconstruct the code. This is the reason there is no
+ * `blobs` equivalent here.
+ */
+export interface ScriptRow {
+  hash: string;
+  tabId: number;
+  pageUrl: string;
+  origin: "inline" | "injected-inline" | "Function";
+  byteLength: number;
+  analysis: JsArtifactAnalysis;
+  seenAt: number;
+}
+
+/** An external script, as metadata. Its contents are never read. */
+export interface ExternalScriptRow {
+  /** `${tabId}|${url}`, so one row per script per tab. */
+  key: string;
+  tabId: number;
+  url: string;
+  thirdParty: boolean;
+  hasIntegrity: boolean;
+  injected: boolean;
+  seenAt: number;
+}
+
 export type EventKind = "captured" | "analysed" | "skipped" | "alerted" | "cleared";
 
 /** One line in the activity feed. */
@@ -90,6 +158,7 @@ export interface EventRow {
   level?: RiskLevel;
   score?: number;
   detail?: string;
+  context?: CaptureContext;
 }
 
 let dbPromise: Promise<IDBDatabase> | null = null;
@@ -117,6 +186,18 @@ export function openDB(): Promise<IDBDatabase> {
       notes.createIndex("by_tab", "tabId");
 
       db.createObjectStore("events", { keyPath: "id", autoIncrement: true });
+
+      // Runtime measurements, one row per reporting context, and the map from
+      // the page's own fingerprint to the hash this worker computed.
+      const runtime = db.createObjectStore("runtime", { keyPath: "contextId" });
+      runtime.createIndex("by_tab", "tabId");
+      db.createObjectStore("fingerprints", { keyPath: "fingerprint" });
+
+      // JavaScript: measurements and verdicts, never source.
+      const scripts = db.createObjectStore("scripts", { keyPath: "hash" });
+      scripts.createIndex("by_tab", "tabId");
+      const external = db.createObjectStore("externalScripts", { keyPath: "key" });
+      external.createIndex("by_tab", "tabId");
 
       // Verdicts are keyed by artifact hash too, so a module already analysed
       // on another site is never analysed twice.
@@ -285,9 +366,9 @@ export async function hasAnalysis(hash: string): Promise<boolean> {
   });
 }
 
-/** Drop sightings and notes belonging to a tab that has gone away. */
+/** Drop sightings, notes and measurements belonging to a tab that has gone away. */
 export async function clearTab(tabId: number): Promise<void> {
-  for (const name of ["sightings", "notes"] as const) {
+  for (const name of ["sightings", "notes", "runtime", "scripts", "externalScripts"] as const) {
     await withStore(name, "readwrite", async (store) => {
       const keys = await promisify<IDBValidKey[]>(store.index("by_tab").getAllKeys(tabId));
       await Promise.all(keys.map((key) => promisify(store.delete(key))));
@@ -295,9 +376,86 @@ export async function clearTab(tabId: number): Promise<void> {
   }
 }
 
+/** Record which artifact a page-side fingerprint turned out to identify. */
+export async function linkFingerprint(fingerprint: string, hash: string): Promise<void> {
+  await withStore("fingerprints", "readwrite", (store) =>
+    promisify(store.put({ fingerprint, hash, seenAt: Date.now() })),
+  );
+}
+
+export async function resolveFingerprints(
+  fingerprints: readonly string[],
+): Promise<Map<string, string>> {
+  return withStore("fingerprints", "readonly", async (store) => {
+    const rows = await Promise.all(
+      fingerprints.map((fingerprint) =>
+        promisify<FingerprintRow | undefined>(store.get(fingerprint)),
+      ),
+    );
+    return new Map(
+      rows
+        .filter((row): row is FingerprintRow => row !== undefined)
+        .map((row) => [row.fingerprint, row.hash]),
+    );
+  });
+}
+
+/** Store a context's latest report, replacing whatever it said before. */
+export async function saveRuntimeReport(row: RuntimeRow): Promise<void> {
+  await withStore("runtime", "readwrite", (store) => promisify(store.put(row)));
+}
+
+export async function getRuntimeByTab(tabId: number): Promise<RuntimeRow[]> {
+  return withStore("runtime", "readonly", (store) =>
+    promisify<RuntimeRow[]>(store.index("by_tab").getAll(tabId)),
+  );
+}
+
+export async function getAllRuntime(): Promise<RuntimeRow[]> {
+  return withStore("runtime", "readonly", (store) => promisify<RuntimeRow[]>(store.getAll()));
+}
+
+export async function saveScript(row: ScriptRow): Promise<void> {
+  await withStore("scripts", "readwrite", (store) => promisify(store.put(row)));
+}
+
+export async function getScriptsByTab(tabId: number): Promise<ScriptRow[]> {
+  return withStore("scripts", "readonly", (store) =>
+    promisify<ScriptRow[]>(store.index("by_tab").getAll(tabId)),
+  );
+}
+
+export async function hasScript(hash: string): Promise<boolean> {
+  return withStore("scripts", "readonly", async (store) => {
+    const row = await promisify<ScriptRow | undefined>(store.get(hash));
+    return row !== undefined;
+  });
+}
+
+export async function saveExternalScript(row: ExternalScriptRow): Promise<void> {
+  await withStore("externalScripts", "readwrite", (store) => promisify(store.put(row)));
+}
+
+export async function getExternalScriptsByTab(tabId: number): Promise<ExternalScriptRow[]> {
+  return withStore("externalScripts", "readonly", (store) =>
+    promisify<ExternalScriptRow[]>(store.index("by_tab").getAll(tabId)),
+  );
+}
+
 /** Wipe everything. Exposed in the dashboard so the user can reset state. */
 export async function clearAll(): Promise<void> {
-  const names = ["artifacts", "blobs", "sightings", "notes", "events", "results"] as const;
+  const names = [
+    "artifacts",
+    "blobs",
+    "sightings",
+    "notes",
+    "events",
+    "results",
+    "runtime",
+    "fingerprints",
+    "scripts",
+    "externalScripts",
+  ] as const;
   await withStores(names, "readwrite", async (stores) => {
     await Promise.all(names.map((name) => promisify(stores[name]!.clear())));
   });

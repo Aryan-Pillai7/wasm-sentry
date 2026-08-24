@@ -1,0 +1,50 @@
+# Build, typecheck, lint and test on every push and pull request.
+#
+# The fixture step is not optional: `extension/test/pipeline.test.ts` runs the
+# real service worker against `testbed/miner.wasm`, and that file is generated
+# rather than committed. Without this step the end-to-end test skips itself and
+# the run stays green while covering nothing.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A new push to a branch makes the previous run's answer irrelevant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Node 20 reached end of life in April 2026. 22.13 is the floor the
+        # backend declares -- it is where `node:sqlite` stopped needing a flag --
+        # and 24 is what development runs on.
+        node: ['22.13', '24']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      # `npm ci` rather than `npm install`: it fails on a lockfile that does not
+      # match package.json instead of quietly resolving something else.
+      - run: npm ci
+
+      - run: npm run build
+      - run: npm run typecheck
+      - run: npm run lint
+
+      - name: Generate testbed fixtures
+        run: npm run fixtures
+
+      - run: npm test

@@ -1,7 +1,13 @@
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import type { AnalysisSummary, Finding, PageScorecard, RiskAssessment } from "@wasm-sentry/core";
-import type { TabReport, TabArtifactView } from "../shared/protocol";
+import type {
+  AnalysisSummary,
+  Finding,
+  PageScorecard,
+  RiskAssessment,
+  RuntimeFeatures,
+} from "@wasm-sentry/core";
+import type { TabReport, TabArtifactView, TabScriptView } from "../shared/protocol";
 import { loadReport } from "./load-report";
 import "./popup.css";
 
@@ -128,6 +134,34 @@ function StaticFacts({ summary }: { summary: AnalysisSummary }): React.JSX.Eleme
   );
 }
 
+/**
+ * What the module has actually been seen doing.
+ *
+ * Shown next to the static facts rather than folded into them, because the two
+ * answer different questions and a reader needs to know which is which: the
+ * static numbers describe what the module *is*, these describe what it *did*.
+ */
+function RuntimeFacts({ runtime }: { runtime: RuntimeFeatures }): React.JSX.Element {
+  const seconds = (ms: number): string => `${(ms / 1000).toFixed(ms >= 10_000 ? 0 : 1)}s`;
+
+  return (
+    <div className="facts">
+      <dl>
+        <div><dt>watched</dt><dd>{seconds(runtime.observedMs)}</dd></div>
+        <div><dt>executing</dt><dd>{seconds(runtime.wasmTimeMs)}</dd></div>
+        <div><dt>cores</dt><dd>{runtime.cpuShare.toFixed(2)}</dd></div>
+        <div><dt>contexts</dt><dd>{runtime.contextCount}</dd></div>
+      </dl>
+      {runtime.timingStopped && (
+        <div className="caveat">
+          timing stopped for this module — it is called too often to measure each call, so the
+          figure above is a floor
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ArtifactCard({ artifact }: { artifact: TabArtifactView }): React.JSX.Element {
   const label = artifact.url.startsWith("inline:")
     ? `compiled from memory (${artifact.api})`
@@ -146,6 +180,7 @@ function ArtifactCard({ artifact }: { artifact: TabArtifactView }): React.JSX.El
       <div className="artifact-meta">
         <span className="tag">{artifact.kind}</span>
         {artifact.api ? <span className="tag">{artifact.api}</span> : null}
+        {artifact.context === "worker" ? <span className="tag">in a Worker</span> : null}
         {artifact.sightings > 1 ? <span className="tag">x{artifact.sightings}</span> : null}
         {analysis?.risk && (
           <span className={`verdict level-${analysis.risk.level}`}>{analysis.risk.score}</span>
@@ -158,6 +193,7 @@ function ArtifactCard({ artifact }: { artifact: TabArtifactView }): React.JSX.El
       </div>
 
       {analysis?.risk && <Findings risk={analysis.risk} />}
+      {analysis?.runtime && <RuntimeFacts runtime={analysis.runtime} />}
       {analysis?.summary && <StaticFacts summary={analysis.summary} />}
 
       {analysis?.watHeader && (
@@ -165,6 +201,56 @@ function ArtifactCard({ artifact }: { artifact: TabArtifactView }): React.JSX.El
           <summary>disassembly</summary>
           <pre>{analysis.watHeader}</pre>
         </details>
+      )}
+    </li>
+  );
+}
+
+const SCRIPT_ORIGIN_LABELS: Record<string, string> = {
+  inline: "inline script",
+  "injected-inline": "script injected at runtime",
+  Function: "code built with new Function",
+};
+
+/**
+ * An analysed piece of JavaScript.
+ *
+ * Deliberately shows measurements and never source. The extension does not
+ * keep the source -- see the consent note in `script-hooks.ts` -- so there is
+ * nothing here to show even if it were wanted.
+ */
+function ScriptCard({ script }: { script: TabScriptView }): React.JSX.Element {
+  const analysis = script.analysis;
+  const summary = analysis.summary;
+
+  return (
+    <li className="artifact">
+      <div className="artifact-head">
+        <code className="hash">{script.hash.slice(0, 12)}</code>
+        <span className="size">{formatBytes(script.byteLength)}</span>
+      </div>
+      <div className="artifact-url">
+        {SCRIPT_ORIGIN_LABELS[script.origin] ?? script.origin}
+      </div>
+      <div className="artifact-meta">
+        <span className="tag">js</span>
+        {analysis.truncated ? <span className="tag">partly scanned</span> : null}
+        {analysis.risk && (
+          <span className={`verdict level-${analysis.risk.level}`}>{analysis.risk.score}</span>
+        )}
+      </div>
+
+      {analysis.risk && <Findings risk={analysis.risk} />}
+
+      {summary && (
+        <div className="facts">
+          <dl>
+            <div><dt>lines</dt><dd>{summary.lineCount}</dd></div>
+            <div><dt>escapes</dt><dd>{percent(summary.escapeDensity)}</dd></div>
+            <div><dt>entropy</dt><dd>{summary.entropy.toFixed(2)}</dd></div>
+            <div><dt>eval sites</dt><dd>{summary.evalSites}</dd></div>
+          </dl>
+        </div>
       )}
     </li>
   );
@@ -248,6 +334,24 @@ function Popup(): React.JSX.Element {
             <ArtifactCard key={artifact.hash} artifact={artifact} />
           ))}
         </ul>
+      )}
+
+      {report.scripts && report.scripts.length > 0 && (
+        <section className="notes">
+          <h2>JavaScript ({report.scripts.length})</h2>
+          <ul className="artifacts">
+            {report.scripts.map((script) => (
+              <ScriptCard key={script.hash} script={script} />
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {report.supplyChain && report.supplyChain.findings.length > 0 && (
+        <section className="notes">
+          <h2>Supply chain</h2>
+          <Findings risk={report.supplyChain} />
+        </section>
       )}
 
       <p className="footer">
