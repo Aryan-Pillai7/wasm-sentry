@@ -31,6 +31,11 @@ npm-debug.log*
 docs/private/
 *.pdf
 
+# a trained model is dropped in by whoever trains one; never committed, because
+# a model is only as honest as the corpus behind it and that corpus is not here
+extension/public/model.json
+corpus/
+
 # generated test fixtures
 testbed/*.wasm
 

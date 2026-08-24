@@ -67,6 +67,27 @@ weighted so that it cannot on its own accuse anything; escalation requires the
 static kernel too, which is the same corroboration-not-accumulation rule the
 static side already followed.
 
+## The classifier
+
+One more rule exists and does not fire, because no model ships with this
+repository.
+
+| Rule | Weight | What it measures |
+|---|---|---|
+| `classifier-opinion` | 18 | A trained logistic regression scores the module above 0.6. Its evidence names the columns that moved the score and the corpus it was trained on. |
+
+Eighteen, below `hash-loop-density`, permanently. A model is an opinion about a
+module; every other rule here is a measurement of one. The project's position is
+that a verdict a user cannot interrogate is a verdict they cannot act on, and
+"the model said so" is exactly that verdict — so the classifier may raise a
+question and never answer one alone.
+
+Training needs a labelled corpus this project does not have. The pipeline around
+it is complete and documented in [`design-decisions.md`](design-decisions.md)
+§7; `npm run train -w @wasm-sentry/core -- <corpus>` cross-validates any corpus
+you supply **against the heuristics on the same folds**, and says plainly when
+the model loses to them.
+
 ## Scoring
 
 Raw score is `Σ (weight × confidence)`, then saturated:

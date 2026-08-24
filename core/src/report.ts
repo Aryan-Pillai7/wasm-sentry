@@ -10,6 +10,7 @@ import type { StaticAnalysisResult } from "./analysis.js";
 import type { KernelCandidate } from "./wasm/features.js";
 import { evaluateHeuristics } from "./heuristics.js";
 import type { RuntimeFeatures } from "./runtime.js";
+import type { ClassifierModel } from "./ml/model.js";
 import { assessRisk, coverageOf } from "./scoring.js";
 import type { RiskAssessment } from "./scoring.js";
 
@@ -72,6 +73,7 @@ export function summarise(
   hash: string,
   result: StaticAnalysisResult,
   runtime?: RuntimeFeatures,
+  model?: ClassifierModel,
 ): ArtifactAnalysis {
   const analyzedAt = Date.now();
   if (!result.ok) {
@@ -79,7 +81,7 @@ export function summarise(
   }
 
   const f = result.features;
-  const findings = evaluateHeuristics(f, runtime);
+  const findings = evaluateHeuristics(f, runtime, model);
   const risk = assessRisk(findings, coverageOf(f));
 
   return {

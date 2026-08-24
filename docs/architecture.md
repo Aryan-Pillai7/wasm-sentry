@@ -131,12 +131,30 @@ re-scored through the same rule pass -- not patched -- because
 `mining-runtime-corroborated` has to see the static kernel and the measured
 execution together.
 
-### 6. AI classification — *Phase 5*
+### 6. AI classification — *pipeline complete, no model shipped*
 
-An opcode-sequence model over the Phase 3 feature pipeline. It runs last on
-purpose: without the feature extractor and a labelled corpus it has nothing to
-learn from, and without the heuristic baseline there is nothing to compare it
-against.
+A logistic regression over the same `ModuleFeatures` the rules read: a versioned
+vector of measurements and opcode shares, standardised, fitted offline, shipped
+as a few kilobytes of JSON that inference reads with a dot product. Linear
+deliberately -- a model whose reasons are a list of columns and how much each
+one moved the score keeps the promise every rule in this project keeps, and
+"the model said so" does not.
+
+**No model is shipped, and this is not a code problem.** Training one honestly
+needs a labelled corpus of benign and verified-malicious modules that does not
+exist here yet. Everything around that corpus is built: vectoriser, trainer,
+k-fold evaluation, a CLI, and the socket in the extension a model drops into.
+
+Two things are enforced rather than left to whoever runs it. Standardisation is
+fitted **inside each fold**, because fitting it over the whole corpus leaks the
+test set's distribution into training and flatters every number afterwards. And
+the evaluation always scores the heuristics on the same folds, so the model is
+reported against the baseline it has to beat -- including when it loses, which
+the CLI says in those words.
+
+The `classifier-opinion` rule is weighted below every corroborated rule,
+permanently. A model is an opinion about a module; the rules are measurements of
+one.
 
 ### 7. Risk aggregation and Privacy Scorecard — *complete*
 

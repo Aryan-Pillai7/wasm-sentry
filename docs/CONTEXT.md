@@ -16,13 +16,13 @@ Last updated after the dashboard landed.
 | 2 | Disassembly + static analysis | complete, tested |
 | 3 | Heuristics + Privacy Scorecard | complete, tested |
 | 4 | Runtime behavioural monitoring | complete, tested |
-| 5 | ML classifier | not started |
+| 5 | ML classifier | pipeline complete and tested; no model, no corpus |
 | — | JS bundle / supply-chain analysis | not started |
 | — | Backend SQLite + job queue | complete, tested |
 
 Beyond the phases, the extension has gained a dashboard, desktop notifications,
 generated icons, a testbed page, CI, and worker instrumentation that closed the
-last capture blind spot. 174 tests, all green: 58 in `core`, 103 in `extension`, 13 in `backend`.
+last capture blind spot. 207 tests, all green: 85 in `core`, 109 in `extension`, 13 in `backend`.
 
 ```
 d83f408  Add a dashboard so the extension can show its own work
@@ -117,6 +117,7 @@ measured close to a full core of execution.
 
 ```bash
 npm run dev -w backend                                          # the upload API on :3000
+npm run train     -w @wasm-sentry/core -- corpus/ --out m.json  # train + evaluate a classifier
 npm run inspect   -w @wasm-sentry/core -- path/to/module.wasm   # full report + risk
 npm run calibrate -w @wasm-sentry/core -- path/to/module.wasm   # kernel candidates
 npm run fixtures                                                # regenerate testbed/*.wasm
@@ -146,8 +147,12 @@ core/                    @wasm-sentry/core -- zero runtime dependencies
     base64.ts            transport encoding for chrome.runtime messages
     analysis.ts          analyzeWasm(): entry point, never throws
     report.ts            summarise(): full analysis -> storable record
-    heuristics.ts        12 static rules + 5 runtime rules
+    heuristics.ts        12 static + 5 runtime rules, + the classifier's opinion
     runtime.ts           runtime vocabulary; folding reports into features
+    ml/features.ts       versioned feature vector; order is part of the model
+    ml/model.ts          the model type, inference, and strict parsing
+    ml/train.ts          logistic regression, no dependencies
+    ml/evaluate.ts       k-fold, metrics, and the heuristic baseline
     scoring.ts           saturating score, bands, page scorecard
     wasm/
       reader.ts          bounds-checked LEB128 / vector reads
@@ -158,7 +163,7 @@ core/                    @wasm-sentry/core -- zero runtime dependencies
       features.ts        feature vector; kernel candidate selection
       wat.ts             WAT rendering as a view over our own decode
   test/fixtures.ts       hand-assembled modules, validated by the real engine
-  scripts/               inspect, calibrate, emit-fixtures
+  scripts/               inspect, calibrate, emit-fixtures, train-model
 
 extension/
   src/
@@ -256,7 +261,11 @@ docs/                    architecture, detection, api-spec, this file
 11. **The backend needs Node 22.13+**, which is where `node:sqlite` stopped
     needing a flag. That is the floor CI runs, and why the matrix starts there
     rather than at 22.12.
-12. **Runtime thresholds are not corpus-calibrated, and the docs say so.** The
+12. **Bump `FEATURE_SCHEMA_VERSION` whenever the feature vector changes** —
+    added, removed, reordered or rescaled. Inference refuses a model trained on
+    a different version rather than scoring the wrong columns, which is the one
+    failure here that produces confident nonsense with no way to notice.
+13. **Runtime thresholds are not corpus-calibrated, and the docs say so.** The
     mechanism is measured; the lines drawn on it are conservative. If you tune
     them, `docs/detection.md` has to change with them, and no detection rate may
     be claimed either way.
@@ -265,22 +274,36 @@ docs/                    architecture, detection, api-spec, this file
 
 ## Next steps, in order
 
-### Phase 5 — ML classifier
+### The corpus — the only thing Phase 5 is waiting on
 
-Blocked on data, not code. Now the last unfinished phase.
+The pipeline is built, tested and documented. What does not exist is a labelled
+corpus, and it is not a code problem.
 
-- **A labelled corpus is the blocker.** WasmBench for benign; malicious samples
-  are the hard part and may need requesting from the authors of the cryptojacking
-  papers in the synopsis. Until then no detection rate can be claimed honestly,
-  and none is claimed anywhere in this repository.
-- The feature pipeline is already done: `ModuleFeatures` plus the per-function
-  rows is the training input, and `opcodeCounts` gives the opcode-sequence view
-  Deep-Wasm uses.
-- Train outside the extension; ship inference only.
-- **The heuristics are the baseline to beat.** Report the model against them, not
-  against nothing. That baseline is now stronger than it was: it includes runtime
-  evidence, and a classifier trained on static features alone is being compared
-  against something that can see more than it can.
+```
+corpus/
+  benign/       WasmBench, npm packages, anything you can vouch for
+  malicious/    verified samples -- the hard half
+```
+
+```bash
+npm run train -w @wasm-sentry/core -- corpus/ --out extension/public/model.json
+```
+
+That cross-validates against the heuristics on the same folds, prints both rows,
+and says plainly when the model loses to the rules. Drop the model into
+`extension/public/`, rebuild, and `classifier-opinion` starts contributing;
+without one, nothing in the extension changes.
+
+- **Benign samples are easy. Malicious ones are the blocker.** They may need
+  requesting from the authors of the cryptojacking papers in the synopsis.
+- **The baseline to beat is now much stronger than it was**, because it includes
+  runtime evidence. A classifier trained on static features alone is being
+  compared against something that can see more than it can, and it should be
+  expected to lose. That is a fair comparison, not a rigged one — but say which
+  it is when reporting.
+- **Do not ship a model trained on a small corpus** to make the phase look
+  finished. The trainer warns below fifty modules and the CLI disclaims every
+  run; those exist to be listened to.
 
 ### Smaller items
 

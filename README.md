@@ -9,10 +9,11 @@ never touch the network — disassembles it, and explains what it does in terms 
 person can act on. It is built as a Chrome MV3 extension with a shared analysis
 engine that runs unchanged in the browser, in Node, and in tests.
 
-> Status: Phase 4 of 5. Capture, disassembly, static analysis, heuristic
-> detection, the Privacy Scorecard and runtime behavioural monitoring are
-> complete and tested; the ML classifier is next, and is blocked on a labelled
-> corpus rather than on code. See
+> Status: all five phases built. Capture, disassembly, static analysis,
+> heuristic detection, the Privacy Scorecard, runtime behavioural monitoring and
+> the classifier pipeline are complete and tested. **No trained model ships**,
+> because no labelled corpus exists to train one honestly, and no detection rate
+> is claimed anywhere in this repository. See
 > [`docs/architecture.md`](docs/architecture.md) for the full pipeline.
 
 ## Layout
@@ -141,6 +142,26 @@ finding rather than just the score, and is de-duplicated per site and module so
 a reload never notifies twice. Turn it off with the `notifyOnHighRisk` setting.
 
 The popup is only needed for per-page detail.
+
+## The classifier
+
+A logistic regression over the same feature vector the rules read — trained
+offline, shipped as JSON, inference by dot product. Linear on purpose: the
+reason for a score is a list of columns and how much each one moved it, which is
+the same standard every rule here is held to. "The model said so" is not.
+
+**No model is shipped.** Training one needs a corpus of benign and
+verified-malicious modules that this project does not have; everything around
+that corpus is built and tested. Point the trainer at your own:
+
+```bash
+npm run train -w @wasm-sentry/core -- corpus/ --out extension/public/model.json
+```
+
+It cross-validates against the heuristics **on the same folds** and says plainly
+when the model loses to them — which, for a small corpus, is the likely and
+correct outcome. The rules are explainable and the model is not, so a tie means
+ship the rules.
 
 ## Privacy
 

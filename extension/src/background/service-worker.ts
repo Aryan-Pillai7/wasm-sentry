@@ -21,7 +21,12 @@ import {
   sniff,
   summarise,
 } from "@wasm-sentry/core";
-import type { RiskAssessment, RiskLevel, RuntimeFeatures } from "@wasm-sentry/core";
+import type {
+  ClassifierModel,
+  RiskAssessment,
+  RiskLevel,
+  RuntimeFeatures,
+} from "@wasm-sentry/core";
 import {
   addEvent,
   addNote,
@@ -48,6 +53,7 @@ import {
 import type { RuntimeRow, SightingRow } from "../utils/db";
 import { getSettings, setSettings } from "../utils/settings";
 import { decideAlert } from "./alerts";
+import { loadClassifier } from "./classifier";
 import { uploadArtifact } from "./upload";
 import { MAX_ARTIFACT_BYTES } from "../shared/protocol";
 import type {
@@ -148,7 +154,7 @@ async function handleCapture(
   // parse; it is synchronous and budgeted, so this is bounded work, not a
   // reason to reach for a keepalive.
   if (!(await hasAnalysis(hash))) {
-    const analysis = summarise(hash, analyzeWasm(bytes));
+    const analysis = summarise(hash, analyzeWasm(bytes), undefined, await classifier());
     await saveAnalysis(analysis);
     console.log(
       `${LOG} analysed ${hash.slice(0, 12)} in ${analysis.elapsedMs}ms:`,
@@ -241,6 +247,21 @@ async function handleSkip(
   return { ok: true };
 }
 
+/**
+ * The classifier, if one was packaged.
+ *
+ * None ships with this extension -- see `classifier.ts` -- so this resolves to
+ * `undefined` and the rules behave exactly as they did before it existed. It is
+ * awaited rather than passed in because the answer is cached after the first
+ * look, including the answer "there isn't one".
+ */
+function classifier(): Promise<ClassifierModel | undefined> {
+  return loadClassifier({
+    getURL: (path) => chrome.runtime.getURL(path),
+    fetchImpl: fetch,
+  }).catch(() => undefined);
+}
+
 /* ------------------------------------------------------------------ */
 /* Runtime intake                                                      */
 /* ------------------------------------------------------------------ */
@@ -317,7 +338,7 @@ async function rescoreTab(tabId: number): Promise<number> {
     const bytes = await getArtifactBytes(hash);
     if (!bytes) continue;
 
-    const analysis = summarise(hash, analyzeWasm(bytes), features);
+    const analysis = summarise(hash, analyzeWasm(bytes), features, await classifier());
     await saveAnalysis(analysis);
     rescored++;
 

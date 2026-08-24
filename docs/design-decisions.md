@@ -641,11 +641,12 @@ worker is instrumented from the same prelude blob.
 
 ### 6.5 Counts
 
-174 tests. 58 in `core` (sniffing, hashing, base64, parser, decoder, CFG,
-features, heuristics, scoring, runtime accumulation and runtime rules), 103 in
+207 tests. 85 in `core` (sniffing, hashing, base64, parser, decoder, CFG,
+features, heuristics, scoring, runtime accumulation and rules, the feature
+vectoriser, the trainer, inference and the evaluation harness), 109 in
 `extension` (capture hooks, worker instrumentation and base compensation, the
 built worker prelude, the runtime monitor and socket counting, opt-in upload,
-storage against a real IndexedDB, popup message handling, alert policy,
+model loading, storage against a real IndexedDB, popup message handling, alert policy,
 formatting, and an end-to-end run through the real service worker), and 13 in
 `backend` (the real routes over a real socket against an in-memory database,
 plus the queue's failure paths against a stub store).
@@ -660,24 +661,111 @@ criticises.
 
 ---
 
-## 7. Things deliberately not done yet
+## 7. The classifier (Phase 5)
+
+### 7.1 What was blocked, and what was not
+
+The classifier was always last, and for a stated reason: without the feature
+pipeline it has nothing to read, and without the heuristics there is nothing to
+compare it against. Both now exist. What still does not is **a labelled corpus**,
+and that is not a code problem — benign modules are easy (WasmBench, npm), and
+verified malicious samples are the hard half.
+
+So the corpus is the deliverable that is missing, and everything around it is
+the deliverable that is not: vectoriser, trainer, k-fold evaluation against the
+baseline, a CLI, and the socket in the extension a model drops into. **No model
+ships with this repository**, and none of the numbers anywhere in it is a
+detection rate.
+
+### 7.2 Logistic regression, not something stronger
+
+Not because it is the best thing that could sit here. Because of what this
+project already committed to: every finding states the numbers that produced it,
+and a rule that cannot be interrogated does not ship.
+
+A linear model keeps that promise. The reason for a score is a list of columns
+and how much each one moved it, in the same units as the module's own
+measurements — so `classifier-opinion` can name them, and a reader can check
+them against the disassembly. A gradient-boosted ensemble or a small network
+would very likely score better and would return a number with nothing a
+developer can check, which is the drawback in the literature review that this
+whole codebase is a response to.
+
+It is also sixty numbers. It serialises to a few kilobytes of JSON, inference is
+a dot product, and it adds no dependency to a package whose lack of dependencies
+is the reason the same engine runs in three places. Shipping a second
+WebAssembly runtime inside a WebAssembly security tool to run a model would be
+both ironic and a real attack surface.
+
+### 7.3 The feature schema is versioned, and mismatches are refused
+
+A vector is meaningless without knowing what column 34 was. The schema is a
+named, ordered, versioned list; the model records the version it was trained on;
+and inference **throws** rather than scoring the wrong columns.
+
+This is not defensive tidiness. A model quietly reading the wrong inputs
+produces confident nonsense, and there is no way to notice it from the output —
+which is the single worst failure mode available to this component.
+
+Everything is bounded, too: counts are log-scaled, ratios are already 0..1, and
+a non-finite value is replaced with zero before it can leave the vectoriser. One
+`NaN` poisons every weight it touches during training and does it silently.
+
+### 7.4 The evaluation is the part that matters
+
+A model with 0.94 accuracy sounds like an achievement until the twelve
+hand-written rules it replaced score 0.95 on the same folds.
+
+So `crossValidate` scores both on **the same held-out modules**, and the
+comparison is a field of the result rather than something a report can omit. The
+CLI prints both rows and a verdict, and when the model loses it says so in those
+words: *ship the rules, not the model*. When it merely ties, it still says ship
+the rules — the rules are explainable and the model is not.
+
+Three smaller decisions inside it:
+
+- **Standardisation is fitted inside each fold.** Fitting it over the whole
+  corpus first leaks the test set's distribution into training. It is the
+  easiest mistake to make here and the hardest to notice afterwards.
+- **Class weighting is on by default.** A corpus that is 95% benign lets a model
+  reach 95% accuracy by answering "benign" every time — a useless detector with
+  a good headline number. A test pins that the weighting finds the positives.
+- **Accuracy is never reported alone**, and AUC gives ties half credit, because
+  a rule-based baseline produces many identical scores and a tie-blind
+  implementation would flatter it.
+
+### 7.5 A corpus with one class is refused, loudly
+
+`train()` throws on a single-class corpus and `crossValidate` throws when a fold
+would train on one. A model fitted to one class learns to answer that class
+while reporting excellent accuracy. Failing with a confusing error message is
+cheaper than shipping that model.
+
+The CLI also warns below fifty modules, and prints, every single run:
+
+> No detection rate is claimed by this repository. These numbers describe the
+> corpus you supplied and nothing else.
+
+---
+
+## 8. Things deliberately not done yet
 
 | Not done | Why |
 |---|---|
-| ML classifier | Needs the Phase 2 feature pipeline (done) *and* a labelled dataset (not obtained). Heuristics are the baseline it has to beat — building the model first leaves nothing to compare against. |
+| A shipped model | The pipeline is built and tested; the labelled corpus is not obtained. A model trained on anything less would produce confident numbers with nothing behind them. |
 | JS bundle analysis | Needs its own consent story: shipping page scripts anywhere is a bigger privacy question than Wasm modules. |
 | Element/data segment contents | Only needed for indirect-call resolution; segment *counts* are already a useful structural feature. |
 
 ---
 
-## 8. At a glance
+## 9. At a glance
 
-- **7-stage pipeline**, 4 of 5 phases complete
+- **7-stage pipeline**, all 5 phases built; the classifier ships no model, because no labelled corpus exists to train one honestly
 - **0 runtime dependencies** in the analysis core
 - **643 KB / 1,879 functions parsed in 165 ms**; 2.4 MB / 975k instructions in 399 ms
 - **0 warnings, 0 undecodable function bodies** on both real-world modules
 - **~38 KB** added to the extension bundle by the whole analysis engine
-- **174 tests**, all green — 58 in `core`, 103 in `extension`, 13 in `backend`
+- **207 tests**, all green — 85 in `core`, 109 in `extension`, 13 in `backend`
 - **12 detection rules**, every one citing evidence, 5 citing literature
 - Calibration: benign real-world modules score **6** and **21** out of 100; the
   full mining shape scores **63**

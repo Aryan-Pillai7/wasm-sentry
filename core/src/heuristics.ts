@@ -15,6 +15,8 @@
  */
 import type { ModuleFeatures } from "./wasm/features.js";
 import type { RuntimeFeatures } from "./runtime.js";
+import { predict } from "./ml/model.js";
+import type { ClassifierModel } from "./ml/model.js";
 
 export type Severity = "info" | "low" | "medium" | "high";
 
@@ -467,6 +469,63 @@ const RUNTIME_RULES: RuntimeRule[] = [
 ];
 
 /* ------------------------------------------------------------------ */
+/* The classifier's opinion                                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Weighted below every corroborated rule, on purpose and permanently.
+ *
+ * A model is an opinion about a module; the rules above are measurements of
+ * one. This project's entire position is that a verdict a user cannot
+ * interrogate is a verdict they cannot act on, and "the model said so" is
+ * exactly that verdict -- so the classifier is allowed to raise a question and
+ * never to answer one on its own. Its evidence names the columns that moved the
+ * score, which is as close to interrogable as a model gets.
+ *
+ * No model ships with this repository, so in practice this rule does not fire.
+ * It is the socket a model plugs into once there is a corpus honest enough to
+ * train one.
+ */
+const CLASSIFIER_RULE = {
+  id: "classifier-opinion",
+  title: "A trained classifier considers this module suspicious",
+  severity: "medium" as Severity,
+  weight: 18,
+  reference: "Deep-Wasm: Detecting Malicious WebAssembly Binaries via Deep Learning",
+};
+
+/** Only worth reporting once the model is more sure than a coin flip. */
+const CLASSIFIER_FLOOR = 0.6;
+
+function classifierHit(model: ClassifierModel, features: ModuleFeatures): RuleHit | null {
+  let prediction;
+  try {
+    prediction = predict(model, features);
+  } catch {
+    // A model trained on a different feature schema, or a corrupt one. Scoring
+    // the wrong columns would produce confident nonsense; saying nothing is the
+    // honest failure.
+    return null;
+  }
+
+  if (prediction.probability < CLASSIFIER_FLOOR) return null;
+
+  const drivers = prediction.topContributions
+    .slice(0, 3)
+    .map((entry) => `${entry.feature}=${entry.value.toFixed(3)}`)
+    .join(", ");
+
+  return {
+    confidence: ramp(prediction.probability, CLASSIFIER_FLOOR, 0.95),
+    evidence:
+      `a model trained on ${model.metadata.maliciousCount} malicious and ` +
+      `${model.metadata.benignCount} benign modules scores this ` +
+      `${prediction.probability.toFixed(2)}, driven by ${drivers} ` +
+      `(a model's opinion, not a measurement of intent)`,
+  };
+}
+
+/* ------------------------------------------------------------------ */
 /* Evaluation                                                          */
 /* ------------------------------------------------------------------ */
 
@@ -496,6 +555,7 @@ function toFinding(
 export function evaluateHeuristics(
   features: ModuleFeatures,
   runtime?: RuntimeFeatures,
+  model?: ClassifierModel,
 ): Finding[] {
   const findings: Finding[] = [];
 
@@ -513,6 +573,11 @@ export function evaluateHeuristics(
     }
   }
 
+  if (model) {
+    const hit = classifierHit(model, features);
+    if (hit && hit.confidence > 0) findings.push(toFinding(CLASSIFIER_RULE, hit));
+  }
+
   return findings.sort((a, b) => b.weight * b.confidence - a.weight * a.confidence);
 }
 
@@ -522,14 +587,14 @@ export interface RuleSummary {
   severity: Severity;
   weight: number;
   reference?: string;
-  /** Whether the rule needs the module to have been observed running. */
-  kind: "static" | "runtime";
+  /** What the rule needs: the bytes, the module running, or a trained model. */
+  kind: "static" | "runtime" | "model";
 }
 
 /** Every rule the engine can produce, for documentation and UI legends. */
 export function listRules(): RuleSummary[] {
-  const summarise = (kind: "static" | "runtime") =>
-    ({ id, title, severity, weight, reference }: Rule | RuntimeRule): RuleSummary => ({
+  const summarise = (kind: RuleSummary["kind"]) =>
+    ({ id, title, severity, weight, reference }: Omit<Rule, "evaluate">): RuleSummary => ({
       id,
       title,
       severity,
@@ -538,5 +603,9 @@ export function listRules(): RuleSummary[] {
       ...(reference !== undefined ? { reference } : {}),
     });
 
-  return [...RULES.map(summarise("static")), ...RUNTIME_RULES.map(summarise("runtime"))];
+  return [
+    ...RULES.map(summarise("static")),
+    ...RUNTIME_RULES.map(summarise("runtime")),
+    summarise("model")(CLASSIFIER_RULE),
+  ];
 }
