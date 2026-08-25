@@ -159,7 +159,11 @@ export function decodeInstruction(reader: Reader): Instruction {
       instruction.args.push(reader.u8());
       break;
     case Imm.SelectT:
-      instruction.args.push(...reader.vec((r) => r.u8()));
+      // Not `.push(...vec)`: spreading a large array into a single call is a
+      // known V8 pathology (an "arguments list", not a normal append) and
+      // was observed to blow past several GB on a corrupt module where a
+      // garbage byte stream got misread as a huge vec count here.
+      for (const type of reader.vec((r) => r.u8())) instruction.args.push(type);
       break;
     case Imm.RefType:
       instruction.args.push(reader.u8());
@@ -181,12 +185,26 @@ export function decodeInstruction(reader: Reader): Instruction {
 /**
  * Decode instructions until `end`, or until the structured `end` opcode that
  * closes the outermost block -- whichever comes first.
+ *
+ * `maxInstructions` bounds a single call, not just the caller's running
+ * total: `end` is only checked against the declared body size, which for a
+ * corrupt or hostile module can span nearly the entire file while still
+ * passing that check. Without an in-loop cap, one such function decodes
+ * millions of instructions before the caller's own budget check ever runs
+ * again -- observed directly: a 9.4MB malformed module (rejected by
+ * `WebAssembly.validate`) drove this loop past 8GB of live objects in one
+ * call. `Infinity` preserves the old unbounded behaviour for callers that
+ * don't pass a limit.
  */
-export function decodeExpression(reader: Reader, end: number): DecodeResult {
+export function decodeExpression(reader: Reader, end: number, maxInstructions = Infinity): DecodeResult {
   const instructions: Instruction[] = [];
   let depth = 0;
 
   while (reader.offset < end) {
+    if (instructions.length >= maxInstructions) {
+      return { instructions, truncated: `exceeded ${maxInstructions} instructions in a single function` };
+    }
+
     let instruction: Instruction;
     try {
       instruction = decodeInstruction(reader);

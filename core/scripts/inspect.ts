@@ -3,7 +3,7 @@ import { analyzeWasm } from "../src/analysis.js";
 import { summarise } from "../src/report.js";
 
 for (const path of process.argv.slice(2)) {
-  const bytes = new Uint8Array(readFileSync(path));
+  const bytes = readFileSync(path);
   const valid = WebAssembly.validate(bytes);
   const result = analyzeWasm(bytes);
   if (!result.ok) {

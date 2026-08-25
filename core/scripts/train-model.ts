@@ -52,7 +52,7 @@ function loadDirectory(dir: string, label: 0 | 1): CorpusEntry[] {
     const path = join(dir, name);
     if (!statSync(path).isFile()) continue;
 
-    const result = analyzeWasm(new Uint8Array(readFileSync(path)));
+    const result = analyzeWasm(readFileSync(path));
     if (!result.ok) {
       // Reported rather than dropped silently: a corpus quietly missing a
       // third of its samples produces numbers about a corpus nobody chose.
