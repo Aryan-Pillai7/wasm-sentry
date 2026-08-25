@@ -40,9 +40,17 @@ function contextOf(value: unknown): CaptureContext {
 }
 
 function send(message: CaptureRequest | SkipRequest | RuntimeRequest | ScriptRequest): void {
-  // Fire and forget. A closed service worker, a torn-down extension context or
-  // a navigation mid-flight all reject here, and none of them are actionable.
-  void chrome.runtime.sendMessage(message).catch(() => undefined);
+  // Fire and forget. A closed service worker or a navigation mid-flight reject
+  // the returned promise, which .catch() below handles -- but a context that
+  // was *already* torn down before this call throws synchronously instead,
+  // since the throw happens while resolving `chrome.runtime` itself, before
+  // sendMessage returns anything to attach .catch() to. Both are the same
+  // non-actionable case from here, so both need to be swallowed.
+  try {
+    void chrome.runtime.sendMessage(message).catch(() => undefined);
+  } catch {
+    // Extension context was already invalidated before the call was made.
+  }
 }
 
 window.addEventListener("message", (event: MessageEvent) => {
