@@ -21,6 +21,7 @@
  */
 import { FEATURE_COUNT, FEATURE_NAMES, FEATURE_SCHEMA_VERSION, vectorise } from "./features.js";
 import type { ModuleFeatures } from "../wasm/features.js";
+import { sha256 } from "../hash.js";
 
 export interface ClassifierModel {
   /** Which feature schema this was trained against. Refused if it disagrees. */
@@ -71,6 +72,29 @@ function sigmoid(z: number): number {
   if (z >= 0) return 1 / (1 + Math.exp(-z));
   const e = Math.exp(z);
   return e / (1 + e);
+}
+
+/**
+ * Content hash of what actually decides a prediction -- weights, bias,
+ * standardisation stats and the schema they're indexed against. Deliberately
+ * excludes `metadata`: two training runs that land on the same numbers are
+ * the same model as far as any stored verdict is concerned, even if they ran
+ * at different times or one has a note the other doesn't. Compute this once
+ * per loaded model, not per prediction -- it's the same reason artifact
+ * identity is a content hash rather than a URL: a verdict computed under one
+ * version should mean the same thing wherever that version's hash appears
+ * again, and a store can tell a stale verdict from a fresh one only if it
+ * has this to compare against.
+ */
+export async function modelVersion(model: ClassifierModel): Promise<string> {
+  const canonical = JSON.stringify({
+    schemaVersion: model.schemaVersion,
+    weights: model.weights,
+    bias: model.bias,
+    mean: model.mean,
+    stdDev: model.stdDev,
+  });
+  return sha256(new TextEncoder().encode(canonical));
 }
 
 /** Standardise a raw vector with the model's own training statistics. */

@@ -1,7 +1,7 @@
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { loadClassifier, resetClassifierCache } from "../src/background/classifier";
-import { FEATURE_COUNT, FEATURE_SCHEMA_VERSION } from "@wasm-sentry/core";
+import { loadClassifier, loadClassifierVersion, resetClassifierCache } from "../src/background/classifier";
+import { FEATURE_COUNT, FEATURE_SCHEMA_VERSION, modelVersion } from "@wasm-sentry/core";
 
 /**
  * No model ships with this extension, so the case that matters most is the one
@@ -88,4 +88,37 @@ test("a fetch that throws is not an error the capture path has to handle", async
   }) as unknown as typeof fetch;
 
   assert.equal(await loadClassifier({ getURL, fetchImpl }), undefined);
+});
+
+test("no model means no version either", async () => {
+  const { fetchImpl } = responder("", false);
+  assert.equal(await loadClassifierVersion({ getURL, fetchImpl }), undefined);
+});
+
+test("a loaded model's version is its content hash, not its metadata", async () => {
+  const model = validModel();
+  const { fetchImpl } = responder(JSON.stringify(model));
+  const version = await loadClassifierVersion({ getURL, fetchImpl });
+
+  assert.ok(version);
+  // Independently recomputed from the same fields modelVersion() itself
+  // reads, so this fails if the two ever disagree on what "version" means.
+  const expected = await modelVersion({
+    schemaVersion: model["schemaVersion"] as number,
+    weights: model["weights"] as number[],
+    bias: model["bias"] as number,
+    mean: model["mean"] as number[],
+    stdDev: model["stdDev"] as number[],
+    metadata: model["metadata"] as never,
+  });
+  assert.equal(version, expected);
+});
+
+test("the version is hashed once and cached, like the model itself", async () => {
+  const present = responder(JSON.stringify(validModel()));
+  await loadClassifierVersion({ getURL, fetchImpl: present.fetchImpl });
+  await loadClassifierVersion({ getURL, fetchImpl: present.fetchImpl });
+  await loadClassifierVersion({ getURL, fetchImpl: present.fetchImpl });
+
+  assert.equal(present.calls(), 1);
 });

@@ -34,6 +34,8 @@ export interface ResultRow {
   analysis: string;
   risk_level: string | null;
   risk_score: number | null;
+  ruleset_version: number | null;
+  model_version: string | null;
   created_at: number;
 }
 
@@ -56,6 +58,13 @@ export interface Store {
   markFailed: (id: string, error: string) => void;
   saveResult: (jobId: string, analysis: ArtifactAnalysis) => void;
   getResult: (hash: string) => ResultRow | undefined;
+  /**
+   * Hashes whose stored verdict was produced by a different ruleset and/or
+   * model than the ones given -- the set a re-scan needs to touch, not
+   * every artifact ever seen. Either argument can be omitted to ignore that
+   * axis (e.g. checking only for a stale ruleset regardless of model).
+   */
+  staleHashes: (current: { rulesetVersion?: number; modelVersion?: string }) => string[];
   countJobs: (status: JobStatus) => number;
   close: () => void;
 }
@@ -106,12 +115,14 @@ export function openStore(path: string): Store {
     "UPDATE jobs SET status = 'failed', finished_at = ?, error = ? WHERE id = ?",
   );
   const upsertResult = db.prepare(
-    `INSERT INTO results (hash, job_id, analysis, risk_level, risk_score, created_at)
-     VALUES (?, ?, ?, ?, ?, ?)
+    `INSERT INTO results (hash, job_id, analysis, risk_level, risk_score, ruleset_version, model_version, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(hash) DO UPDATE SET job_id = excluded.job_id,
                                      analysis = excluded.analysis,
                                      risk_level = excluded.risk_level,
                                      risk_score = excluded.risk_score,
+                                     ruleset_version = excluded.ruleset_version,
+                                     model_version = excluded.model_version,
                                      created_at = excluded.created_at`,
   );
   const selectResult = db.prepare("SELECT * FROM results WHERE hash = ?");
@@ -164,11 +175,36 @@ export function openStore(path: string): Store {
         JSON.stringify(analysis),
         analysis.risk?.level ?? null,
         analysis.risk?.score ?? null,
+        analysis.rulesetVersion ?? null,
+        analysis.modelVersion ?? null,
         Date.now(),
       );
     },
 
     getResult: (hash) => selectResult.get(hash) as ResultRow | undefined,
+
+    staleHashes({ rulesetVersion, modelVersion }) {
+      // No filter given on an axis means "don't care about that axis" -- not
+      // "everything is stale on it" -- so each clause is skipped entirely
+      // when its argument is absent, rather than compared against undefined.
+      const clauses: string[] = [];
+      const params: (string | number)[] = [];
+      if (rulesetVersion !== undefined) {
+        clauses.push("(ruleset_version IS NULL OR ruleset_version != ?)");
+        params.push(rulesetVersion);
+      }
+      if (modelVersion !== undefined) {
+        clauses.push("(model_version IS NULL OR model_version != ?)");
+        params.push(modelVersion);
+      }
+      if (clauses.length === 0) return [];
+
+      const rows = db
+        .prepare(`SELECT hash FROM results WHERE ${clauses.join(" OR ")}`)
+        .all(...params) as Array<{ hash: string }>;
+      return rows.map((row) => row.hash);
+    },
+
     countJobs: (status) => Number((countByStatus.get(status) as { n: number }).n),
     close: () => db.close(),
   };
@@ -179,10 +215,15 @@ export function parseResult(row: ResultRow): {
   analysis: ArtifactAnalysis;
   level: RiskLevel | null;
   score: number | null;
+  /** From the dedicated column, not re-parsed from `analysis` -- cheap to check for staleness. */
+  rulesetVersion: number | null;
+  modelVersion: string | null;
 } {
   return {
     analysis: JSON.parse(row.analysis) as ArtifactAnalysis,
     level: (row.risk_level as RiskLevel | null) ?? null,
     score: row.risk_score,
+    rulesetVersion: row.ruleset_version,
+    modelVersion: row.model_version,
   };
 }

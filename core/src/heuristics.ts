@@ -18,6 +18,15 @@ import type { RuntimeFeatures } from "./runtime.js";
 import { predict } from "./ml/model.js";
 import type { ClassifierModel } from "./ml/model.js";
 
+/**
+ * Bump whenever a rule's threshold, weight or logic changes -- anything that
+ * would make a stored verdict answer a question this file no longer asks the
+ * same way. A verdict stamped with the ruleset that produced it is one a
+ * store can tell is stale without re-deriving it; a verdict with no version
+ * at all is indistinguishable from a fresh one, silently, forever.
+ */
+export const RULESET_VERSION = 1;
+
 export type Severity = "info" | "low" | "medium" | "high";
 
 export interface Finding {

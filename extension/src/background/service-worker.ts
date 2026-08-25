@@ -61,7 +61,7 @@ import {
 import type { RuntimeRow, SightingRow } from "../utils/db";
 import { getSettings, setSettings } from "../utils/settings";
 import { decideAlert } from "./alerts";
-import { loadClassifier } from "./classifier";
+import { loadClassifier, loadClassifierVersion } from "./classifier";
 import { uploadArtifact } from "./upload";
 import { MAX_ARTIFACT_BYTES } from "../shared/protocol";
 import type {
@@ -164,7 +164,8 @@ async function handleCapture(
   // parse; it is synchronous and budgeted, so this is bounded work, not a
   // reason to reach for a keepalive.
   if (!(await hasAnalysis(hash))) {
-    const analysis = summarise(hash, analyzeWasm(bytes), undefined, await classifier());
+    const loaded = await classifier();
+    const analysis = summarise(hash, analyzeWasm(bytes), undefined, loaded?.model, loaded?.version);
     await saveAnalysis(analysis);
     console.log(
       `${LOG} analysed ${hash.slice(0, 12)} in ${analysis.elapsedMs}ms:`,
@@ -258,18 +259,25 @@ async function handleSkip(
 }
 
 /**
- * The classifier, if one was packaged.
+ * The classifier, if one was packaged -- with the content-hash `summarise()`
+ * needs to stamp a verdict as coming from this exact model, not just "a"
+ * model.
  *
  * None ships with this extension -- see `classifier.ts` -- so this resolves to
  * `undefined` and the rules behave exactly as they did before it existed. It is
  * awaited rather than passed in because the answer is cached after the first
  * look, including the answer "there isn't one".
  */
-function classifier(): Promise<ClassifierModel | undefined> {
-  return loadClassifier({
-    getURL: (path) => chrome.runtime.getURL(path),
-    fetchImpl: fetch,
-  }).catch(() => undefined);
+async function classifier(): Promise<{ model: ClassifierModel; version: string } | undefined> {
+  const deps = { getURL: (path: string) => chrome.runtime.getURL(path), fetchImpl: fetch };
+  try {
+    const model = await loadClassifier(deps);
+    if (model === undefined) return undefined;
+    const version = await loadClassifierVersion(deps);
+    return version !== undefined ? { model, version } : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -424,7 +432,8 @@ async function rescoreTab(tabId: number): Promise<number> {
     const bytes = await getArtifactBytes(hash);
     if (!bytes) continue;
 
-    const analysis = summarise(hash, analyzeWasm(bytes), features, await classifier());
+    const loaded = await classifier();
+    const analysis = summarise(hash, analyzeWasm(bytes), features, loaded?.model, loaded?.version);
     await saveAnalysis(analysis);
     rescored++;
 

@@ -18,7 +18,7 @@
  * and re-fetching a file that is not there on every single capture would be a
  * silly way to spend that lifetime.
  */
-import { parseModel } from "@wasm-sentry/core";
+import { parseModel, modelVersion } from "@wasm-sentry/core";
 import type { ClassifierModel } from "@wasm-sentry/core";
 
 const MODEL_PATH = "model.json";
@@ -36,9 +36,12 @@ export interface LoadDeps {
  */
 let cached: ClassifierModel | undefined | null = null;
 
+let cachedVersionHash: string | null = null;
+
 /** Forget what we learned. Only used by tests. */
 export function resetClassifierCache(): void {
   cached = null;
+  cachedVersionHash = null;
 }
 
 export async function loadClassifier(deps: LoadDeps): Promise<ClassifierModel | undefined> {
@@ -69,4 +72,18 @@ export async function loadClassifier(deps: LoadDeps): Promise<ClassifierModel | 
     cached = undefined;
     return undefined;
   }
+}
+
+/**
+ * `modelVersion()` of whatever `loadClassifier` resolved to, cached the same
+ * way and for the same reason: hashing is cheap once, not worth repeating on
+ * every capture for a model that cannot have changed mid-lifetime. Resolves
+ * to `undefined` exactly when `loadClassifier` would, so a caller can await
+ * both and know the second is meaningless without checking the first.
+ */
+export async function loadClassifierVersion(deps: LoadDeps): Promise<string | undefined> {
+  const model = await loadClassifier(deps);
+  if (model === undefined) return undefined;
+  if (cachedVersionHash === null) cachedVersionHash = await modelVersion(model);
+  return cachedVersionHash;
 }

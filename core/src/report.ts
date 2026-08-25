@@ -8,7 +8,7 @@
  */
 import type { StaticAnalysisResult } from "./analysis.js";
 import type { KernelCandidate } from "./wasm/features.js";
-import { evaluateHeuristics } from "./heuristics.js";
+import { evaluateHeuristics, RULESET_VERSION } from "./heuristics.js";
 import type { RuntimeFeatures } from "./runtime.js";
 import type { ClassifierModel } from "./ml/model.js";
 import { assessRisk, coverageOf } from "./scoring.js";
@@ -47,6 +47,19 @@ export interface ArtifactAnalysis {
   ok: boolean;
   /** Why analysis failed, when `ok` is false. */
   reason?: string;
+  /**
+   * Which `RULESET_VERSION` produced `risk`, so a stored verdict can be told
+   * apart from one a newer set of rules would compute. Present whenever
+   * `risk` is: the two are set together or not at all.
+   */
+  rulesetVersion?: number;
+  /**
+   * Content hash of the classifier model that contributed to `risk`, from
+   * `modelVersion()`. Absent when no model was loaded for this analysis --
+   * which is the honest default today, since none is shipped yet -- and
+   * absence here means exactly that, not "unknown."
+   */
+  modelVersion?: string;
   summary?: AnalysisSummary;
   /** Heuristic verdict with the evidence that produced it. */
   risk?: RiskAssessment;
@@ -74,6 +87,13 @@ export function summarise(
   result: StaticAnalysisResult,
   runtime?: RuntimeFeatures,
   model?: ClassifierModel,
+  /**
+   * `modelVersion(model)`, computed once by the caller when the model was
+   * loaded and passed in here rather than recomputed per call -- hashing is
+   * async and this function is not, deliberately, since it runs on every
+   * capture and callers up and down the stack call it synchronously.
+   */
+  modelVersionHash?: string,
 ): ArtifactAnalysis {
   const analyzedAt = Date.now();
   if (!result.ok) {
@@ -89,6 +109,8 @@ export function summarise(
     analyzedAt,
     elapsedMs: result.elapsedMs,
     ok: true,
+    rulesetVersion: RULESET_VERSION,
+    ...(model !== undefined && modelVersionHash !== undefined ? { modelVersion: modelVersionHash } : {}),
     risk,
     summary: {
       functionCount: f.functionCount,

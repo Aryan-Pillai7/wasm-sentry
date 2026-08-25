@@ -56,6 +56,7 @@ function stubStore(overrides: { bytes?: Uint8Array } = {}): Stub {
     },
     saveResult: (_jobId, analysis) => void results.push(analysis.hash),
     getResult: () => undefined,
+    staleHashes: () => [],
     countJobs: (status) => [...jobs.values()].filter((job) => job.status === status).length,
     close: () => {},
   };

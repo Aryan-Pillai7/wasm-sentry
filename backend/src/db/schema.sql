@@ -32,15 +32,29 @@ CREATE INDEX IF NOT EXISTS jobs_by_hash ON jobs(hash);
 CREATE INDEX IF NOT EXISTS jobs_by_status ON jobs(status);
 
 -- One row per artifact, not per job: re-analysing a module replaces its verdict
--- rather than accumulating a history of the same answer.
+-- rather than accumulating a history of the same answer. That's still the
+-- right cache shape for "the current verdict for this hash" -- what it does
+-- not give you for free is knowing whether the row in front of you is stale,
+-- which is what ruleset_version and model_version are for. Both are stamped
+-- from core's own RULESET_VERSION and modelVersion() at write time, so a
+-- migration to a new ruleset or a new trained model is a WHERE clause
+-- (`ruleset_version != <current>`) against real rows, not a guess. A/B
+-- comparison between two model versions does not need a second copy of this
+-- table either: `artifacts.bytes` is retained specifically so any hash can be
+-- re-analysed offline against a candidate model without touching the live
+-- cache at all.
 CREATE TABLE IF NOT EXISTS results (
-    hash        TEXT PRIMARY KEY,
-    job_id      TEXT NOT NULL,
-    analysis    TEXT NOT NULL,          -- ArtifactAnalysis as JSON
-    risk_level  TEXT,
-    risk_score  INTEGER,
-    created_at  INTEGER NOT NULL,
+    hash            TEXT PRIMARY KEY,
+    job_id          TEXT NOT NULL,
+    analysis        TEXT NOT NULL,          -- ArtifactAnalysis as JSON
+    risk_level      TEXT,
+    risk_score      INTEGER,
+    ruleset_version INTEGER,                -- NULL only for a pre-versioning row never re-analysed since
+    model_version   TEXT,                   -- NULL when no model contributed to this verdict
+    created_at      INTEGER NOT NULL,
     FOREIGN KEY (job_id) REFERENCES jobs(id)
 );
 
 CREATE INDEX IF NOT EXISTS results_by_level ON results(risk_level);
+CREATE INDEX IF NOT EXISTS results_by_ruleset_version ON results(ruleset_version);
+CREATE INDEX IF NOT EXISTS results_by_model_version ON results(model_version);
