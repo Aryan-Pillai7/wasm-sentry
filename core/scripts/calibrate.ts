@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { analyzeWasm } from "../src/analysis.js";
 
 for (const path of process.argv.slice(2)) {
-  const r = analyzeWasm(new Uint8Array(readFileSync(path)));
+  const r = analyzeWasm(readFileSync(path));
   if (!r.ok) continue;
   const candidates = r.features.functions.filter((f) => f.largestLoop >= 40 && f.bitwiseRatio >= 0.15);
   console.log(`${path.split("/").pop()}: ${candidates.length} functions with a >=40 loop and >=15% bitwise`);

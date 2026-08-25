@@ -162,7 +162,7 @@ re-scored through the same rule pass -- not patched -- because
 `mining-runtime-corroborated` has to see the static kernel and the measured
 execution together.
 
-### 6. AI classification — *pipeline complete, no model shipped*
+### 6. AI classification — *pipeline complete, corpus acquisition in progress*
 
 A logistic regression over the same `ModuleFeatures` the rules read: a versioned
 vector of measurements and opcode shares, standardised, fitted offline, shipped
@@ -171,10 +171,19 @@ deliberately -- a model whose reasons are a list of columns and how much each
 one moved the score keeps the promise every rule in this project keeps, and
 "the model said so" does not.
 
-**No model is shipped, and this is not a code problem.** Training one honestly
-needs a labelled corpus of benign and verified-malicious modules that does not
-exist here yet. Everything around that corpus is built: vectoriser, trainer,
-k-fold evaluation, a CLI, and the socket in the extension a model drops into.
+**No model is shipped yet, and this was never a code problem.** Training one
+honestly needs a labelled corpus of benign and verified-malicious modules,
+which is what `docs/DATASET-PLAN.md` and four scripts in `core/scripts/`
+(`filter-corpus`, `dedupe-corpus`, `cluster-corpus`, `split-holdout`) exist to
+assemble: WasmBench plus a fixed set of npm packages chosen specifically to
+include the memory-hard KDFs (`hash-wasm`, `argon2-browser`) that look like
+mining kernels to a static detector and must not be confused for one, on the
+benign side; open-source browser-miner repos and a self-compiled CryptoNight
+reference build on the malicious side; deduplicated by content hash and by
+feature-vector near-duplicate clustering, with a held-out set carved off
+before any number is trusted. Everything around the corpus itself was already
+built: vectoriser, trainer, k-fold evaluation, a CLI, and the socket in the
+extension a model drops into.
 
 Two things are enforced rather than left to whoever runs it. Standardisation is
 fitted **inside each fold**, because fitting it over the whole corpus leaks the
@@ -186,6 +195,17 @@ the CLI says in those words.
 The `classifier-opinion` rule is weighted below every corroborated rule,
 permanently. A model is an opinion about a module; the rules are measurements of
 one.
+
+**A second, larger model is designed but not started.**
+`docs/DEEP-MODEL-GUIDE.md` specifies a transformer over raw opcode sequences,
+pretrained with masked-opcode prediction on the same unlabelled WasmBench pool
+and fine-tuned on the small labelled corpus above, exported to ONNX for
+in-browser inference via `onnxruntime-web`. It stays a design document, not a
+build task, until the linear model is trained and reported: the deep model
+earns a place in the extension only if it beats both the heuristics *and* the
+linear model on the same held-out set, not the heuristics alone. Until then
+the linear model is not a placeholder for it -- it is the cheap, always-on
+tier a larger model would sit behind, not replace.
 
 ### 7. Risk aggregation and Privacy Scorecard — *complete*
 

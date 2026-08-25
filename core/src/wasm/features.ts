@@ -260,7 +260,7 @@ export function extractFeatures(module: WasmModule, options: ExtractOptions = {}
     }
 
     const reader = new Reader(module.bytes, entry.bodyStart);
-    const { instructions, truncated } = decodeExpression(reader, entry.bodyEnd);
+    const { instructions, truncated } = decodeExpression(reader, entry.bodyEnd, budget - instructionCount);
     decodedFunctions++;
     if (truncated !== undefined) truncatedFunctions++;
 

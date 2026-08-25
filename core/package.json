@@ -21,7 +21,12 @@
     "inspect": "tsx scripts/inspect.ts",
     "calibrate": "tsx scripts/calibrate.ts",
     "fixtures": "tsx scripts/emit-fixtures.ts",
-    "train": "tsx scripts/train-model.ts"
+    "train": "tsx scripts/train-model.ts",
+    "filter-corpus": "tsx scripts/filter-corpus.ts",
+    "dedupe-corpus": "tsx scripts/dedupe-corpus.ts",
+    "cluster-corpus": "tsx scripts/cluster-corpus.ts",
+    "split-holdout": "tsx scripts/split-holdout.ts",
+    "diagnose-corpus": "tsx scripts/diagnose-corpus.ts"
   },
   "devDependencies": {
     "@types/node": "^24.12.2"

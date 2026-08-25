@@ -55,6 +55,23 @@ const BRANCHES = new Set(["br", "br_if", "br_table"]);
 const TERMINATORS = new Set(["br", "br_table", "return", "unreachable"]);
 
 /**
+ * `branchTarget` only ever reads `open[open.length - 1 - label]` for a small
+ * `label` (real compiled code essentially never branches more than a few
+ * levels out). Snapshotting only the innermost frames bounds the cost of
+ * `openAt[index] = [...stack]` to a constant per instruction instead of
+ * O(depth) -- for well-nested input `depth` is already small so this changes
+ * nothing, but for a corrupt module where garbage bytes rarely decode as a
+ * matching `end`, `stack` grows toward the instruction count itself, turning
+ * an O(n) pass into O(n * depth). Observed directly: one real (WasmBench)
+ * file that fails `WebAssembly.validate` drove this past 8GB from ~1.1M
+ * instructions before this cap existed. A label deeper than the cap now
+ * falls through to the existing "can't resolve" path (`frameId === undefined`
+ * -> -1, treated as approximate) rather than being read exactly -- the same
+ * fallback already used for any other unresolved branch.
+ */
+const MAX_OPEN_DEPTH = 256;
+
+/**
  * Match every structured opcode with its `end`, and record which frames are
  * open at each instruction. One pass, so branch resolution afterwards is a
  * lookup rather than a search.
@@ -77,14 +94,14 @@ function buildFrames(instructions: readonly Instruction[]): {
     if (name === "end") {
       // The frame closes *at* this instruction, so record the stack before
       // popping -- an `end` belongs to the frame it terminates.
-      openAt[index] = [...stack];
+      openAt[index] = stack.length > MAX_OPEN_DEPTH ? stack.slice(-MAX_OPEN_DEPTH) : [...stack];
       const frameId = stack.pop();
       if (frameId !== undefined && frameId !== 0) frames[frameId]!.endIndex = index;
       else if (frameId === 0) frames[0]!.endIndex = index;
       continue;
     }
 
-    openAt[index] = [...stack];
+    openAt[index] = stack.length > MAX_OPEN_DEPTH ? stack.slice(-MAX_OPEN_DEPTH) : [...stack];
 
     if (name === "block" || name === "loop" || name === "if") {
       const frame: Frame = {
