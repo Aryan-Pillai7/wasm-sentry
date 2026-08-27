@@ -204,6 +204,7 @@ export function evaluateJsHeuristics(features: JsFeatures): Finding[] {
       confidence: Number(hit.confidence.toFixed(3)),
       weight: rule.weight,
       evidence: hit.evidence,
+      kind: "static",
       ...(rule.reference !== undefined ? { reference: rule.reference } : {}),
     });
   }
@@ -236,6 +237,7 @@ export function evaluateScriptInventory(scripts: readonly ScriptReference[]): Fi
       severity: "info",
       weight: 6,
       confidence: 0.35,
+      kind: "static",
       evidence:
         `${unpinned.length} script(s) from ${origins.length} other origin(s) -- ` +
         `${quoteList(origins)} -- run without Subresource Integrity` +

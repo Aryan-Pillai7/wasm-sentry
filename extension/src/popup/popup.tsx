@@ -32,6 +32,40 @@ const LEVEL_LABELS: Record<string, string> = {
   critical: "Almost certainly unwanted",
 };
 
+const KIND_LABELS: Record<Finding["kind"], string> = {
+  static: "Rule",
+  runtime: "Behavior",
+  model: "AI",
+};
+
+const KIND_TITLES: Record<Finding["kind"], string> = {
+  static: "Static rule — the bytes, before anything runs",
+  runtime: "Runtime rule — what the module was observed doing",
+  model: "Trained classifier — a model's opinion, not a measurement",
+};
+
+function KindBadge({ kind }: { kind: Finding["kind"] }): React.JSX.Element {
+  return (
+    <span className={`kind-badge k-${kind}`} title={KIND_TITLES[kind]}>
+      {KIND_LABELS[kind]}
+    </span>
+  );
+}
+
+/** The three detection layers, stated once so a badge on a finding is legible without a lookup. */
+function LayerLegend(): React.JSX.Element {
+  return (
+    <div className="layers">
+      {(["static", "runtime", "model"] as const).map((kind) => (
+        <span key={kind} className={`layer-chip k-${kind}`} title={KIND_TITLES[kind]}>
+          <span className="dot" />
+          {KIND_LABELS[kind]}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 /**
  * The Privacy Scorecard.
  *
@@ -45,7 +79,15 @@ function Scorecard({ card }: { card: PageScorecard }): React.JSX.Element {
     <section className={`scorecard level-${card.level}`}>
       <div className="score-row">
         <span className="level">{LEVEL_LABELS[card.level] ?? card.level}</span>
-        {card.moduleCount > 0 && <span className="score">{card.score}/100</span>}
+        {card.moduleCount > 0 && (
+          <span
+            className="score-gauge"
+            style={{ "--pct": card.score } as React.CSSProperties}
+            title={`${card.score}/100`}
+          >
+            <span>{card.score}</span>
+          </span>
+        )}
       </div>
       <p className="headline">{card.headline}</p>
       {card.unanalysedCount > 0 && (
@@ -62,7 +104,10 @@ function FindingRow({ finding }: { finding: Finding }): React.JSX.Element {
   return (
     <li className={`finding sev-${finding.severity}`}>
       <div className="finding-head">
-        <span className="finding-title">{finding.title}</span>
+        <span className="finding-head-main">
+          <KindBadge kind={finding.kind} />
+          <span className="finding-title">{finding.title}</span>
+        </span>
         <span className="confidence">{Math.round(finding.confidence * 100)}%</span>
       </div>
       <p className="evidence">{finding.evidence}</p>
@@ -310,37 +355,52 @@ function Popup(): React.JSX.Element {
 
   const notes = report.notes;
 
+  // A module that scored 0 has nothing to say -- clutter, not a finding. A module
+  // still awaiting analysis has no score yet at all, which is not the same thing
+  // as a score of 0, so it stays visible until it is actually scored.
+  const scoredArtifacts = report.artifacts.filter(
+    (artifact) => (artifact.analysis?.risk?.score ?? 1) > 0,
+  );
+  const scoredScripts = (report.scripts ?? []).filter(
+    (script) => (script.analysis.risk?.score ?? 1) > 0,
+  );
+
   return (
     <div className="panel">
       <header>
         <h1>
-          <span className="pulse" /> Wasm-Sentry
+          <span className="pulse" />
+          <span className="brand-a">Wasm</span>
+          <span className="brand-b">-Sentry</span>
         </h1>
-        <span className="count">{report.artifacts.length} modules</span>
+        <span className="count">{scoredArtifacts.length} modules</span>
       </header>
 
       {failure && <p className="caveat">Last refresh failed: {failure.message}</p>}
 
+      <LayerLegend />
+
       <Scorecard card={report.scorecard} />
 
-      {report.artifacts.length === 0 ? (
+      {scoredArtifacts.length === 0 ? (
         <p className="muted">
-          No WebAssembly captured on this page yet. Reload the page if it was already open when the
-          extension started.
+          {report.artifacts.length === 0
+            ? "No WebAssembly captured on this page yet. Reload the page if it was already open when the extension started."
+            : `${report.artifacts.length} module(s) captured, none scored above zero.`}
         </p>
       ) : (
         <ul className="artifacts">
-          {report.artifacts.map((artifact) => (
+          {scoredArtifacts.map((artifact) => (
             <ArtifactCard key={artifact.hash} artifact={artifact} />
           ))}
         </ul>
       )}
 
-      {report.scripts && report.scripts.length > 0 && (
+      {scoredScripts.length > 0 && (
         <section className="notes">
-          <h2>JavaScript ({report.scripts.length})</h2>
+          <h2>JavaScript ({scoredScripts.length})</h2>
           <ul className="artifacts">
-            {report.scripts.map((script) => (
+            {scoredScripts.map((script) => (
               <ScriptCard key={script.hash} script={script} />
             ))}
           </ul>
@@ -355,7 +415,7 @@ function Popup(): React.JSX.Element {
       )}
 
       <p className="footer">
-        <button onClick={() => void chrome.runtime.openOptionsPage()}>
+        <button className="primary" onClick={() => void chrome.runtime.openOptionsPage()}>
           Open dashboard
         </button>
         <span className="caveat">Runs on every page automatically.</span>
@@ -366,7 +426,7 @@ function Popup(): React.JSX.Element {
           <h2>Not analysed ({notes.length})</h2>
           <ul>
             {notes.map((note, index) => (
-              <li key={`${note.url}-${index}`}>
+              <li key={`${note.url}-${index}`} className="note-row">
                 <span className="reason">{NOTE_LABELS[note.reason] ?? note.reason}</span>
                 <span className="note-url" title={note.url}>
                   {note.url || "unknown URL"}

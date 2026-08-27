@@ -10,10 +10,45 @@
 import { useCallback, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { ActivityEvent, ActivityReport, ModuleRow } from "../shared/protocol";
+import type { Finding } from "@wasm-sentry/core";
 import { duration, formatBytes, hostOf, relativeTime } from "./format";
 import "./dashboard.css";
 
 const POLL_MS = 1500;
+
+const FINDING_KIND_LABELS: Record<Finding["kind"], string> = {
+  static: "Rule",
+  runtime: "Behavior",
+  model: "AI",
+};
+
+const FINDING_KIND_TITLES: Record<Finding["kind"], string> = {
+  static: "Static rule — the bytes, before anything runs",
+  runtime: "Runtime rule — what the module was observed doing",
+  model: "Trained classifier — a model's opinion, not a measurement",
+};
+
+function KindBadge({ kind }: { kind: Finding["kind"] }): React.JSX.Element {
+  return (
+    <span className={`kind-badge k-${kind}`} title={FINDING_KIND_TITLES[kind]}>
+      {FINDING_KIND_LABELS[kind]}
+    </span>
+  );
+}
+
+/** The three detection layers, stated once so a badge on a finding is legible without a lookup. */
+function LayerLegend(): React.JSX.Element {
+  return (
+    <div className="layers">
+      {(["static", "runtime", "model"] as const).map((kind) => (
+        <span key={kind} className={`layer-chip k-${kind}`} title={FINDING_KIND_TITLES[kind]}>
+          <span className="dot" />
+          {FINDING_KIND_LABELS[kind]}
+        </span>
+      ))}
+    </div>
+  );
+}
 
 /* ------------------------------------------------------------------ */
 /* Status                                                              */
@@ -218,7 +253,10 @@ function ModuleCard({ module, now }: { module: ModuleRow; now: number }): React.
             {risk.findings.map((finding) => (
               <li key={finding.id} className={`finding sev-${finding.severity}`}>
                 <div className="finding-head">
-                  <span>{finding.title}</span>
+                  <span className="finding-title">
+                    <KindBadge kind={finding.kind} />
+                    {finding.title}
+                  </span>
                   <span className="muted">{Math.round(finding.confidence * 100)}%</span>
                 </div>
                 <p className="evidence">{finding.evidence}</p>
@@ -399,7 +437,10 @@ function Dashboard(): React.JSX.Element {
   if (!report) {
     return (
       <main>
-        <h1>Wasm-Sentry</h1>
+        <h1>
+          <span className="brand-a">Wasm</span>
+          <span className="brand-b">-Sentry</span>
+        </h1>
         <p className={error ? "error" : "muted"}>{error ?? "Loading…"}</p>
       </main>
     );
@@ -409,10 +450,14 @@ function Dashboard(): React.JSX.Element {
     <main>
       <header className="page-head">
         <h1>
-          <span className="pulse" /> Wasm-Sentry
+          <span className="pulse" />
+          <span className="brand-a">Wasm</span>
+          <span className="brand-b">-Sentry</span>
         </h1>
         <span className="muted">auditing every page you open · refreshes automatically</span>
       </header>
+
+      <LayerLegend />
 
       {error && <p className="error">Last refresh failed: {error}</p>}
 

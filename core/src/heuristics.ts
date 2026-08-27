@@ -29,6 +29,9 @@ export const RULESET_VERSION = 1;
 
 export type Severity = "info" | "low" | "medium" | "high";
 
+/** What a finding needed to be produced: the bytes, the module running, or a trained model. */
+export type FindingKind = "static" | "runtime" | "model";
+
 export interface Finding {
   /** Stable rule identifier, safe to key on. */
   id: string;
@@ -42,6 +45,15 @@ export interface Finding {
   evidence: string;
   /** The literature the rule is drawn from. */
   reference?: string;
+  /**
+   * Which of the three detection layers produced this: static analysis,
+   * runtime observation, or the trained classifier. Carried on the finding
+   * itself, not just in `listRules()`'s catalog, so a reader can see which
+   * layer caught something without a separate lookup -- the same reasoning
+   * that puts the evidence numbers on the finding instead of a rule-name
+   * they'd have to go look up.
+   */
+  kind: FindingKind;
 }
 
 interface RuleHit {
@@ -541,6 +553,7 @@ function classifierHit(model: ClassifierModel, features: ModuleFeatures): RuleHi
 function toFinding(
   rule: { id: string; title: string; severity: Severity; weight: number; reference?: string },
   hit: RuleHit,
+  kind: FindingKind,
 ): Finding {
   return {
     id: rule.id,
@@ -549,6 +562,7 @@ function toFinding(
     confidence: Number(hit.confidence.toFixed(3)),
     weight: rule.weight,
     evidence: hit.evidence,
+    kind,
     ...(rule.reference !== undefined ? { reference: rule.reference } : {}),
   };
 }
@@ -571,20 +585,20 @@ export function evaluateHeuristics(
   for (const rule of RULES) {
     const hit = rule.evaluate(features);
     if (!hit || hit.confidence <= 0) continue;
-    findings.push(toFinding(rule, hit));
+    findings.push(toFinding(rule, hit, "static"));
   }
 
   if (runtime) {
     for (const rule of RUNTIME_RULES) {
       const hit = rule.evaluate(runtime, features);
       if (!hit || hit.confidence <= 0) continue;
-      findings.push(toFinding(rule, hit));
+      findings.push(toFinding(rule, hit, "runtime"));
     }
   }
 
   if (model) {
     const hit = classifierHit(model, features);
-    if (hit && hit.confidence > 0) findings.push(toFinding(CLASSIFIER_RULE, hit));
+    if (hit && hit.confidence > 0) findings.push(toFinding(CLASSIFIER_RULE, hit, "model"));
   }
 
   return findings.sort((a, b) => b.weight * b.confidence - a.weight * a.confidence);
@@ -597,7 +611,7 @@ export interface RuleSummary {
   weight: number;
   reference?: string;
   /** What the rule needs: the bytes, the module running, or a trained model. */
-  kind: "static" | "runtime" | "model";
+  kind: FindingKind;
 }
 
 /** Every rule the engine can produce, for documentation and UI legends. */
