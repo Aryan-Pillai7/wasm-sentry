@@ -67,6 +67,52 @@ function LayerLegend(): React.JSX.Element {
 }
 
 /**
+ * Per-module "caught by" counts, for a presenter who wants to point at one
+ * spot and say which layer found what -- without scrolling and reading
+ * every finding's badge individually.
+ */
+function CaughtByStrip({ findings }: { findings: readonly Finding[] }): React.JSX.Element | null {
+  if (findings.length === 0) return null;
+  const counts = { static: 0, runtime: 0, model: 0 } as Record<Finding["kind"], number>;
+  for (const finding of findings) counts[finding.kind]++;
+
+  return (
+    <span className="caught-by">
+      {(["static", "runtime", "model"] as const)
+        .filter((kind) => counts[kind] > 0)
+        .map((kind) => (
+          <span key={kind} className={`caught-by-item k-${kind}`} title={KIND_TITLES[kind]}>
+            <span className="dot" />
+            {counts[kind]} {KIND_LABELS[kind]}
+          </span>
+        ))}
+    </span>
+  );
+}
+
+/** Fills from zero on mount/update rather than snapping straight to the score. */
+function ScoreGauge({ score }: { score: number }): React.JSX.Element {
+  const [pct, setPct] = useState(0);
+
+  useEffect(() => {
+    let raf2 = 0;
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => setPct(score));
+    });
+    return () => {
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
+    };
+  }, [score]);
+
+  return (
+    <span className="score-gauge" style={{ "--pct": pct } as React.CSSProperties} title={`${score}/100`}>
+      <span>{score}</span>
+    </span>
+  );
+}
+
+/**
  * The Privacy Scorecard.
  *
  * The score is never shown on its own. It sits above the findings that produced
@@ -79,15 +125,7 @@ function Scorecard({ card }: { card: PageScorecard }): React.JSX.Element {
     <section className={`scorecard level-${card.level}`}>
       <div className="score-row">
         <span className="level">{LEVEL_LABELS[card.level] ?? card.level}</span>
-        {card.moduleCount > 0 && (
-          <span
-            className="score-gauge"
-            style={{ "--pct": card.score } as React.CSSProperties}
-            title={`${card.score}/100`}
-          >
-            <span>{card.score}</span>
-          </span>
-        )}
+        {card.moduleCount > 0 && <ScoreGauge score={card.score} />}
       </div>
       <p className="headline">{card.headline}</p>
       {card.unanalysedCount > 0 && (
@@ -100,18 +138,22 @@ function Scorecard({ card }: { card: PageScorecard }): React.JSX.Element {
   );
 }
 
-function FindingRow({ finding }: { finding: Finding }): React.JSX.Element {
+function FindingRow({ finding, index }: { finding: Finding; index: number }): React.JSX.Element {
   return (
-    <li className={`finding sev-${finding.severity}`}>
+    <li className={`finding sev-${finding.severity}`} style={{ "--i": index } as React.CSSProperties}>
       <div className="finding-head">
         <span className="finding-head-main">
           <KindBadge kind={finding.kind} />
-          <span className="finding-title">{finding.title}</span>
+          <span className="finding-title">{finding.plainSummary || finding.title}</span>
         </span>
         <span className="confidence">{Math.round(finding.confidence * 100)}%</span>
       </div>
-      <p className="evidence">{finding.evidence}</p>
-      {finding.reference && <p className="reference">{finding.reference}</p>}
+      <details className="tech">
+        <summary>Technical details</summary>
+        <p className="tech-title">{finding.title}</p>
+        <p className="evidence">{finding.evidence}</p>
+        {finding.reference && <p className="reference">{finding.reference}</p>}
+      </details>
     </li>
   );
 }
@@ -120,8 +162,8 @@ function Findings({ risk }: { risk: RiskAssessment }): React.JSX.Element | null 
   if (risk.findings.length === 0) return null;
   return (
     <ul className="findings">
-      {risk.findings.map((finding) => (
-        <FindingRow key={finding.id} finding={finding} />
+      {risk.findings.map((finding, index) => (
+        <FindingRow key={finding.id} finding={finding} index={index} />
       ))}
     </ul>
   );
@@ -237,6 +279,7 @@ function ArtifactCard({ artifact }: { artifact: TabArtifactView }): React.JSX.El
         )}
       </div>
 
+      {analysis?.risk && <CaughtByStrip findings={analysis.risk.findings} />}
       {analysis?.risk && <Findings risk={analysis.risk} />}
       {analysis?.runtime && <RuntimeFacts runtime={analysis.runtime} />}
       {analysis?.summary && <StaticFacts summary={analysis.summary} />}
@@ -285,6 +328,7 @@ function ScriptCard({ script }: { script: TabScriptView }): React.JSX.Element {
         )}
       </div>
 
+      {analysis.risk && <CaughtByStrip findings={analysis.risk.findings} />}
       {analysis.risk && <Findings risk={analysis.risk} />}
 
       {summary && (
@@ -340,12 +384,17 @@ function Popup(): React.JSX.Element {
     return (
       <div className="panel">
         <header>
-          <h1>Wasm-Sentry</h1>
+          <h1>
+            <span className="brand-a">Wasm</span>
+            <span className="brand-b">-Sentry</span>
+          </h1>
         </header>
         <p className="error">{failure.message}</p>
         {failure.hint && <p className="caveat">{failure.hint}</p>}
         <p>
-          <button onClick={() => setAttempt((value) => value + 1)}>Retry</button>
+          <button className="primary" onClick={() => setAttempt((value) => value + 1)}>
+            Retry
+          </button>
         </p>
       </div>
     );
@@ -383,7 +432,7 @@ function Popup(): React.JSX.Element {
       <Scorecard card={report.scorecard} />
 
       {scoredArtifacts.length === 0 ? (
-        <p className="muted">
+        <p className="empty">
           {report.artifacts.length === 0
             ? "No WebAssembly captured on this page yet. Reload the page if it was already open when the extension started."
             : `${report.artifacts.length} module(s) captured, none scored above zero.`}

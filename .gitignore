@@ -35,6 +35,7 @@ docs/private/
 # a model is only as honest as the corpus behind it and that corpus is not here
 extension/public/model.json
 corpus/
+wasm-sentry-corpus/
 
 # generated test fixtures
 testbed/*.wasm

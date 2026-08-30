@@ -50,6 +50,30 @@ function LayerLegend(): React.JSX.Element {
   );
 }
 
+/**
+ * Per-module "caught by" counts, for a presenter who wants to point at one
+ * spot and say which layer found what -- without scrolling and reading
+ * every finding's badge individually.
+ */
+function CaughtByStrip({ findings }: { findings: readonly Finding[] }): React.JSX.Element | null {
+  if (findings.length === 0) return null;
+  const counts = { static: 0, runtime: 0, model: 0 } as Record<Finding["kind"], number>;
+  for (const finding of findings) counts[finding.kind]++;
+
+  return (
+    <div className="caught-by">
+      {(["static", "runtime", "model"] as const)
+        .filter((kind) => counts[kind] > 0)
+        .map((kind) => (
+          <span key={kind} className={`caught-by-item k-${kind}`} title={FINDING_KIND_TITLES[kind]}>
+            <span className="dot" />
+            {counts[kind]} {FINDING_KIND_LABELS[kind]}
+          </span>
+        ))}
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /* Status                                                              */
 /* ------------------------------------------------------------------ */
@@ -145,35 +169,35 @@ function Activity({ events, now }: { events: ActivityEvent[]; now: number }): Re
         Activity <span className="muted">({events.length})</span>
       </h2>
       {events.length === 0 ? (
-        <p className="muted">
-          Nothing yet. Open a page that uses WebAssembly — this fills in on its own.
-        </p>
+        <p className="empty">Nothing yet. Open a page that uses WebAssembly — this fills in on its own.</p>
       ) : (
-        <table className="feed">
-          <tbody>
-            {events.map((event, index) => (
-              <tr key={`${event.timestamp}-${index}`}>
-                <td className="when">{relativeTime(event.timestamp, now)}</td>
-                <td>
-                  <span className={`kind kind-${event.kind}`}>{KIND_LABELS[event.kind]}</span>
-                </td>
-                <td className="site" title={event.pageUrl}>
-                  {hostOf(event.pageUrl)}
-                </td>
-                <td className="mono">{event.hash ? event.hash.slice(0, 10) : "—"}</td>
-                <td className="size">{event.size !== undefined ? formatBytes(event.size) : ""}</td>
-                <td className="detail">
-                  {event.context === "worker" && <span className="chip">worker</span>}
-                  <LevelChip
-                    {...(event.level !== undefined ? { level: event.level } : {})}
-                    {...(event.score !== undefined ? { score: event.score } : {})}
-                  />
-                  {event.detail ?? ""}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div className="feed-wrap">
+          <table className="feed">
+            <tbody>
+              {events.map((event, index) => (
+                <tr key={`${event.timestamp}-${index}`}>
+                  <td className="when">{relativeTime(event.timestamp, now)}</td>
+                  <td>
+                    <span className={`kind kind-${event.kind}`}>{KIND_LABELS[event.kind]}</span>
+                  </td>
+                  <td className="site" title={event.pageUrl}>
+                    {hostOf(event.pageUrl)}
+                  </td>
+                  <td className="mono">{event.hash ? event.hash.slice(0, 10) : "—"}</td>
+                  <td className="size">{event.size !== undefined ? formatBytes(event.size) : ""}</td>
+                  <td className="detail">
+                    {event.context === "worker" && <span className="chip">worker</span>}
+                    <LevelChip
+                      {...(event.level !== undefined ? { level: event.level } : {})}
+                      {...(event.score !== undefined ? { score: event.score } : {})}
+                    />
+                    {event.detail ?? ""}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </section>
   );
@@ -183,12 +207,20 @@ function Activity({ events, now }: { events: ActivityEvent[]; now: number }): Re
 /* Modules                                                             */
 /* ------------------------------------------------------------------ */
 
-function ModuleCard({ module, now }: { module: ModuleRow; now: number }): React.JSX.Element {
+function ModuleCard({
+  module,
+  now,
+  index,
+}: {
+  module: ModuleRow;
+  now: number;
+  index: number;
+}): React.JSX.Element {
   const risk = module.analysis?.risk;
   const summary = module.analysis?.summary;
 
   return (
-    <details className="module">
+    <details className="module" style={{ "--i": index } as React.CSSProperties}>
       <summary>
         <span className="mono">{module.hash.slice(0, 12)}</span>
         <span className="site">{hostOf(module.lastPageUrl)}</span>
@@ -205,6 +237,7 @@ function ModuleCard({ module, now }: { module: ModuleRow; now: number }): React.
 
       <div className="module-body">
         {risk && <p className="headline">{risk.headline}</p>}
+        {risk && <CaughtByStrip findings={risk.findings} />}
 
         {module.analysis?.runtime && (
           <dl className="facts">
@@ -250,17 +283,25 @@ function ModuleCard({ module, now }: { module: ModuleRow; now: number }): React.
 
         {risk && risk.findings.length > 0 && (
           <ul className="findings">
-            {risk.findings.map((finding) => (
-              <li key={finding.id} className={`finding sev-${finding.severity}`}>
+            {risk.findings.map((finding, findingIndex) => (
+              <li
+                key={finding.id}
+                className={`finding sev-${finding.severity}`}
+                style={{ "--i": findingIndex } as React.CSSProperties}
+              >
                 <div className="finding-head">
                   <span className="finding-title">
                     <KindBadge kind={finding.kind} />
-                    {finding.title}
+                    {finding.plainSummary || finding.title}
                   </span>
                   <span className="muted">{Math.round(finding.confidence * 100)}%</span>
                 </div>
-                <p className="evidence">{finding.evidence}</p>
-                {finding.reference && <p className="reference">{finding.reference}</p>}
+                <details className="tech">
+                  <summary>Technical details</summary>
+                  <p className="tech-title">{finding.title}</p>
+                  <p className="evidence">{finding.evidence}</p>
+                  {finding.reference && <p className="reference">{finding.reference}</p>}
+                </details>
               </li>
             ))}
           </ul>
@@ -277,16 +318,93 @@ function ModuleCard({ module, now }: { module: ModuleRow; now: number }): React.
   );
 }
 
+const RISK_LEVEL_COLORS: Record<string, string> = {
+  critical: "#a40e26",
+  high: "#d1242f",
+  medium: "#bf8700",
+  low: "#2da44e",
+  benign: "#2da44e",
+};
+
+const RISK_LEVEL_ORDER = ["critical", "high", "medium", "low", "benign", "unanalysed"] as const;
+
+const RISK_LEVEL_LABELS: Record<string, string> = {
+  critical: "Critical",
+  high: "High",
+  medium: "Medium",
+  low: "Low",
+  benign: "Benign",
+  unanalysed: "Unanalysed",
+};
+
+/**
+ * The one visual a presenter can point at from across a room: every captured
+ * module, at a glance, as a single bar instead of a list to be read.
+ */
+function RiskBreakdown({ modules }: { modules: ModuleRow[] }): React.JSX.Element | null {
+  const [filled, setFilled] = useState(false);
+
+  useEffect(() => {
+    let raf2 = 0;
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => setFilled(true));
+    });
+    return () => {
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
+    };
+  }, [modules.length]);
+
+  if (modules.length === 0) return null;
+
+  const counts: Record<string, number> = {};
+  for (const module of modules) {
+    const key = module.analysis?.risk?.level ?? "unanalysed";
+    counts[key] = (counts[key] ?? 0) + 1;
+  }
+  const total = modules.length;
+  const segments = RISK_LEVEL_ORDER.filter((level) => (counts[level] ?? 0) > 0);
+
+  return (
+    <div className="risk-bar-wrap">
+      <div className="risk-bar">
+        {segments.map((level) => (
+          <span
+            key={level}
+            className="risk-bar-seg"
+            style={{
+              width: filled ? `${((counts[level] ?? 0) / total) * 100}%` : "0%",
+              background: RISK_LEVEL_COLORS[level] ?? "var(--tag)",
+            }}
+            title={`${counts[level]} ${RISK_LEVEL_LABELS[level]}`}
+          />
+        ))}
+      </div>
+      <div className="risk-bar-legend">
+        {segments.map((level) => (
+          <span key={level} className="risk-bar-legend-item">
+            <span className="dot" style={{ background: RISK_LEVEL_COLORS[level] ?? "var(--muted)" }} />
+            {counts[level]} {RISK_LEVEL_LABELS[level]}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function Modules({ modules, now }: { modules: ModuleRow[]; now: number }): React.JSX.Element {
   return (
     <section>
       <h2>
         Modules <span className="muted">({modules.length})</span>
       </h2>
+      <RiskBreakdown modules={modules} />
       {modules.length === 0 ? (
-        <p className="muted">No modules captured yet.</p>
+        <p className="empty">No modules captured yet.</p>
       ) : (
-        modules.map((module) => <ModuleCard key={module.hash} module={module} now={now} />)
+        modules.map((module, index) => (
+          <ModuleCard key={module.hash} module={module} now={now} index={index} />
+        ))
       )}
     </section>
   );

@@ -1,11 +1,11 @@
 :root {
   color-scheme: light dark;
-  --bg: #ffffff;
+  --bg: #eef1f6;
   --panel: #ffffff;
   --fg: #14161a;
-  --muted: #6b7280;
-  --line: #e5e7eb;
-  --tag: #f3f4f6;
+  --muted: #64748b;
+  --line: #dde2ea;
+  --tag: #eef1f6;
   --accent: #1f6feb;
   --good: #2da44e;
   --warn: #bf8700;
@@ -36,6 +36,15 @@
 }
 
 * { box-sizing: border-box; }
+
+@keyframes rise-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
+}
 
 body {
   margin: 0;
@@ -134,6 +143,30 @@ h2 .muted { text-transform: none; letter-spacing: normal; font-family: inherit; 
 .kind-badge.k-runtime { color: var(--k-runtime); background: color-mix(in srgb, var(--k-runtime) 12%, transparent); border-color: color-mix(in srgb, var(--k-runtime) 35%, transparent); }
 .kind-badge.k-model { color: var(--k-model); background: color-mix(in srgb, var(--k-model) 12%, transparent); border-color: color-mix(in srgb, var(--k-model) 35%, transparent); }
 
+/* ---- Caught-by strip: per-module counts, for pointing at during a demo ---- */
+
+.caught-by { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0 10px; }
+
+.caught-by-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  border-radius: 4px;
+  padding: 3px 8px 3px 7px;
+  font-size: 11.5px;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+
+.caught-by-item .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+
+.caught-by-item.k-static { color: var(--k-static); background: color-mix(in srgb, var(--k-static) 12%, transparent); border-color: color-mix(in srgb, var(--k-static) 30%, transparent); }
+.caught-by-item.k-static .dot { background: var(--k-static); }
+.caught-by-item.k-runtime { color: var(--k-runtime); background: color-mix(in srgb, var(--k-runtime) 12%, transparent); border-color: color-mix(in srgb, var(--k-runtime) 30%, transparent); }
+.caught-by-item.k-runtime .dot { background: var(--k-runtime); }
+.caught-by-item.k-model { color: var(--k-model); background: color-mix(in srgb, var(--k-model) 12%, transparent); border-color: color-mix(in srgb, var(--k-model) 30%, transparent); }
+.caught-by-item.k-model .dot { background: var(--k-model); }
+
 /* A slow pulse is the cheapest honest signal that something is live. */
 .pulse {
   width: 9px;
@@ -169,7 +202,14 @@ h2 .muted { text-transform: none; letter-spacing: normal; font-family: inherit; 
   padding: 10px 12px;
   background: var(--panel);
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  animation: rise-in 320ms ease-out both;
 }
+
+.cards > .card:nth-child(1) { animation-delay: 0ms; }
+.cards > .card:nth-child(2) { animation-delay: 40ms; }
+.cards > .card:nth-child(3) { animation-delay: 80ms; }
+.cards > .card:nth-child(4) { animation-delay: 120ms; }
+.cards > .card:nth-child(n + 5) { animation-delay: 160ms; }
 
 .card:hover {
   border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
@@ -180,13 +220,17 @@ h2 .muted { text-transform: none; letter-spacing: normal; font-family: inherit; 
 .card.tone-warn { border-left-color: var(--warn); }
 .card.tone-neutral { border-left-color: var(--line); }
 .card-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
-.card-value { font-size: 17px; font-weight: 600; margin-top: 2px; }
+.card-value { font-size: 20px; font-weight: 700; margin-top: 2px; letter-spacing: -0.01em; }
 .card-note { font-size: 11px; color: var(--muted); margin-top: 3px; }
 
 /* ---- activity feed ---- */
 
+.feed-wrap { border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
 .feed { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-.feed td { padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.feed td { padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.feed tr:last-child td { border-bottom: none; }
+.feed tbody tr { transition: background 0.1s ease; }
+.feed tbody tr:hover { background: color-mix(in srgb, var(--accent) 5%, transparent); }
 .feed .when { color: var(--muted); white-space: nowrap; width: 74px; }
 .feed .site { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .feed .size { color: var(--muted); white-space: nowrap; text-align: right; }
@@ -201,9 +245,22 @@ h2 .muted { text-transform: none; letter-spacing: normal; font-family: inherit; 
   white-space: nowrap;
 }
 
+.kind-captured { color: var(--muted); }
 .kind-analysed { color: var(--accent); }
 .kind-alerted { color: var(--bad); font-weight: 600; }
 .kind-skipped { color: var(--warn); }
+.kind-cleared { color: var(--good); }
+
+/* ---- empty states ---- */
+
+.empty {
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  padding: 20px 14px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12.5px;
+}
 
 .chip {
   display: inline-block;
@@ -222,6 +279,39 @@ h2 .muted { text-transform: none; letter-spacing: normal; font-family: inherit; 
   font-weight: 600;
 }
 
+/* ---- risk breakdown: the one visual meant to be read from across a room ---- */
+
+.risk-bar-wrap { margin: 4px 0 16px; }
+
+.risk-bar {
+  display: flex;
+  width: 100%;
+  height: 14px;
+  border-radius: 7px;
+  overflow: hidden;
+  background: var(--tag);
+  border: 1px solid var(--line);
+}
+
+.risk-bar-seg {
+  height: 100%;
+  transition: width 700ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.risk-bar-seg:not(:last-child) { border-right: 1px solid color-mix(in srgb, var(--bg) 40%, transparent); }
+
+.risk-bar-legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 8px; }
+
+.risk-bar-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.risk-bar-legend-item .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
 /* ---- modules ---- */
 
 .module {
@@ -229,7 +319,10 @@ h2 .muted { text-transform: none; letter-spacing: normal; font-family: inherit; 
   border-radius: 4px;
   margin-bottom: 8px;
   background: var(--panel);
+  overflow: hidden;
   transition: border-color 0.15s ease;
+  animation: rise-in 360ms ease-out both;
+  animation-delay: calc(min(var(--i, 0), 6) * 40ms);
 }
 
 .module:hover { border-color: color-mix(in srgb, var(--accent) 30%, var(--line)); }
@@ -241,8 +334,11 @@ h2 .muted { text-transform: none; letter-spacing: normal; font-family: inherit; 
   align-items: center;
   gap: 12px;
   list-style: none;
+  transition: background 0.15s ease;
 }
 
+.module > summary:hover { background: color-mix(in srgb, var(--accent) 5%, transparent); }
+.module > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .module > summary::-webkit-details-marker { display: none; }
 .module > summary::before { content: "▸"; color: var(--muted); font-size: 11px; }
 .module[open] > summary::before { content: "▾"; }
@@ -258,17 +354,54 @@ h2 .muted { text-transform: none; letter-spacing: normal; font-family: inherit; 
 .facts dd { margin: 0; font-variant-numeric: tabular-nums; }
 
 .findings { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 7px; min-width: 0; }
-.finding { border-left: 2px solid var(--line); padding-left: 9px; min-width: 0; }
-.finding.sev-medium { border-left-color: var(--warn); }
-.finding.sev-high { border-left-color: var(--bad); }
+.finding {
+  border-left: 2px solid var(--line);
+  border-radius: 4px;
+  padding: 6px 9px;
+  min-width: 0;
+  animation: rise-in 320ms ease-out both;
+  animation-delay: calc(var(--i, 0) * 45ms);
+}
+.finding.sev-medium { border-left-color: var(--warn); background: color-mix(in srgb, var(--warn) 6%, transparent); }
+.finding.sev-high { border-left-color: var(--bad); background: color-mix(in srgb, var(--bad) 8%, transparent); }
 .finding-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; font-size: 12.5px; font-weight: 500; min-width: 0; }
 .finding-head > * { min-width: 0; }
 .finding-title { flex: 1 1 auto; overflow-wrap: break-word; }
+
+/* The plain-language summary is the primary text; the rule's technical
+   title and numeric evidence sit one click away instead of leading. */
+.tech { margin-top: 4px; }
+.tech summary {
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--muted);
+  list-style: none;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  transition: color 0.15s ease;
+}
+.tech summary::-webkit-details-marker { display: none; }
+.tech summary::before { content: "▸ "; }
+.tech[open] summary::before { content: "▾ "; }
+.tech summary:hover { color: var(--fg); }
+.tech summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+.tech-title { margin: 4px 0 0; font-size: 12px; font-weight: 500; overflow-wrap: break-word; }
 .evidence { margin: 2px 0 0; font-size: 12px; color: var(--muted); overflow-wrap: break-word; }
 .reference { margin: 2px 0 0; font-size: 11px; color: var(--muted); opacity: 0.75; font-style: italic; overflow-wrap: break-word; }
 
 .wat { margin-top: 10px; }
-.wat summary { cursor: pointer; font-size: 12px; color: var(--muted); }
+.wat summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--muted);
+  list-style: none;
+  transition: color 0.15s ease;
+}
+.wat summary::-webkit-details-marker { display: none; }
+.wat summary::before { content: "▸ "; }
+.wat[open] summary::before { content: "▾ "; }
+.wat summary:hover { color: var(--fg); }
+.wat summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
 
 .wat pre {
   margin: 6px 0 0;
@@ -280,12 +413,61 @@ h2 .muted { text-transform: none; letter-spacing: normal; font-family: inherit; 
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11.5px;
   line-height: 1.45;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
 }
+.wat pre::-webkit-scrollbar { width: 8px; height: 8px; }
+.wat pre::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
+.wat pre::-webkit-scrollbar-track { background: transparent; }
 
 /* ---- settings ---- */
 
-.toggle { display: flex; gap: 9px; align-items: flex-start; padding: 7px 0; font-size: 13px; }
-.toggle input { margin-top: 3px; }
+.toggle { display: flex; gap: 10px; align-items: flex-start; padding: 7px 0; font-size: 13px; cursor: pointer; }
+
+/* A switch, not a raw checkbox -- the rest of the page never uses OS-default
+   controls, so a stock checkbox next to a monospace uppercase label reads as
+   unfinished rather than restrained. */
+.toggle input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  flex-shrink: 0;
+  width: 32px;
+  height: 18px;
+  margin: 2px 0 0;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--tag);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.toggle input[type="checkbox"]::before {
+  content: "";
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.toggle input[type="checkbox"]:checked {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 30%, var(--tag));
+}
+
+.toggle input[type="checkbox"]:checked::before {
+  background: var(--accent);
+  transform: translateX(14px);
+}
+
+.toggle input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 
 button {
   font: inherit;
@@ -295,7 +477,13 @@ button {
   background: var(--tag);
   color: var(--fg);
   cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
 }
 
 button.danger { border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); color: var(--bad); }
 button:hover { border-color: var(--accent); }
+button:focus { outline: none; }
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

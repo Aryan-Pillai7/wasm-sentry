@@ -43,6 +43,15 @@ export interface Finding {
   weight: number;
   /** What was actually measured, in numbers the reader can verify. */
   evidence: string;
+  /**
+   * What this means, in one sentence, for someone who has never read a
+   * bitwise-ratio number in their life. `title` and `evidence` stay
+   * technical on purpose -- they're what makes a finding verifiable
+   * rather than a bare accusation -- but a first-time user shouldn't
+   * have to parse "31.2% shifts, rotates and xors" to know what a
+   * finding is telling them. This is what a UI shows first.
+   */
+  plainSummary: string;
   /** The literature the rule is drawn from. */
   reference?: string;
   /**
@@ -64,6 +73,8 @@ interface RuleHit {
 interface Rule {
   id: string;
   title: string;
+  /** See `Finding.plainSummary`. */
+  plainSummary: string;
   severity: Severity;
   weight: number;
   reference?: string;
@@ -81,6 +92,8 @@ interface Rule {
 interface RuntimeRule {
   id: string;
   title: string;
+  /** See `Finding.plainSummary`. */
+  plainSummary: string;
   severity: Severity;
   weight: number;
   reference?: string;
@@ -137,6 +150,7 @@ const RULES: Rule[] = [
   {
     id: "known-miner-family",
     title: "Names a known browser mining family",
+    plainSummary: "Directly names a known cryptomining library or service inside the module.",
     severity: "high",
     weight: 45,
     reference: "Silent Spring: Characterizing Cryptojacking in the Wild",
@@ -154,6 +168,8 @@ const RULES: Rule[] = [
   {
     id: "hash-primitive-symbols",
     title: "Exports a hashing primitive by name",
+    plainSummary:
+      "Includes a cryptographic hashing function -- used by miners, but also by ordinary password security, so this alone doesn't mean much.",
     severity: "low",
     weight: 12,
     evaluate: (f) => {
@@ -179,6 +195,8 @@ const RULES: Rule[] = [
     // runtime CPU evidence is what settles it.
     id: "hash-loop-density",
     title: "Tight loop of integer and bitwise arithmetic",
+    plainSummary:
+      "Runs a tight, repetitive number-crunching loop -- the same shape used by cryptomining, but also by ordinary compression and checksum code.",
     severity: "medium",
     weight: 22,
     reference: "MINOS: A Lightweight Real-Time Cryptojacking Detection System",
@@ -188,6 +206,8 @@ const RULES: Rule[] = [
   {
     id: "mining-corroborated",
     title: "Compute kernel combined with mining infrastructure",
+    plainSummary:
+      "Has that repetitive loop plus the extra machinery a miner needs -- multiple worker threads, a live network connection, or a module that does nothing else.",
     severity: "high",
     weight: 40,
     reference: "Silent Spring: Characterizing Cryptojacking in the Wild",
@@ -219,6 +239,8 @@ const RULES: Rule[] = [
   {
     id: "bitwise-dominant-module",
     title: "Module-wide instruction mix is bitwise integer work",
+    plainSummary:
+      "An unusually large share of this module's code is low-level bit-shuffling -- far more than typical compiled apps, which lean on this only occasionally.",
     severity: "medium",
     weight: 25,
     reference: "Deep-Wasm: Detecting Malicious WebAssembly Binaries via Deep Learning",
@@ -238,6 +260,8 @@ const RULES: Rule[] = [
   {
     id: "shared-memory-parallelism",
     title: "Shared memory with atomics, the shape of worker fan-out",
+    plainSummary:
+      "Sets up memory shared across multiple worker threads -- a common way to spread heavy computation across every CPU core.",
     severity: "medium",
     weight: 15,
     reference: "Silent Spring: Characterizing Cryptojacking in the Wild",
@@ -254,6 +278,7 @@ const RULES: Rule[] = [
   {
     id: "socket-transport",
     title: "Imports a socket or message transport",
+    plainSummary: "Can open a live network connection -- how a miner would report results back to a mining pool.",
     severity: "low",
     weight: 15,
     evaluate: (f) => {
@@ -269,6 +294,8 @@ const RULES: Rule[] = [
   {
     id: "compute-kernel-surface",
     title: "Large compute body behind a very small API",
+    plainSummary:
+      "A large amount of code sits behind a tiny public interface -- the shape of a module built to do one repetitive job, not a general-purpose library.",
     severity: "low",
     weight: 10,
     evaluate: (f) => {
@@ -283,6 +310,8 @@ const RULES: Rule[] = [
   {
     id: "aggressive-memory-growth",
     title: "Requests and grows a large linear memory",
+    plainSummary:
+      "Reserves an unusually large, possibly unbounded chunk of memory -- mining routines often need a big scratch space to work in.",
     severity: "low",
     weight: 10,
     evaluate: (f) => {
@@ -300,6 +329,8 @@ const RULES: Rule[] = [
   {
     id: "large-embedded-payload",
     title: "Large embedded data payload",
+    plainSummary:
+      "Most of this module's size is embedded data rather than code -- worth noting, though this is common and often harmless (e.g. bundled assets).",
     severity: "info",
     weight: 8,
     evaluate: (f) => {
@@ -316,6 +347,7 @@ const RULES: Rule[] = [
   {
     id: "stripped-binary",
     title: "Symbol names stripped",
+    plainSummary: "Function names have been removed, which is standard for production builds and not suspicious by itself.",
     severity: "info",
     weight: 4,
     evaluate: (f) => {
@@ -332,6 +364,7 @@ const RULES: Rule[] = [
   {
     id: "incomplete-coverage",
     title: "Analysis did not cover the whole module",
+    plainSummary: "Part of this module couldn't be fully analyzed -- the findings above cover what could be checked, not the whole thing.",
     severity: "info",
     weight: 0,
     evaluate: (f) => {
@@ -380,6 +413,8 @@ const RUNTIME_RULES: RuntimeRule[] = [
     // software is a prior, not a verdict.
     id: "sustained-execution",
     title: "Runs continuously rather than in bursts",
+    plainSummary:
+      "Kept the CPU busy continuously rather than in short bursts, for longer than an ordinary page usually needs.",
     severity: "medium",
     weight: 28,
     reference: "MINOS: A Lightweight Real-Time Cryptojacking Detection System",
@@ -402,6 +437,8 @@ const RUNTIME_RULES: RuntimeRule[] = [
     // out for half a minute is no longer ambiguous.
     id: "mining-runtime-corroborated",
     title: "Compute kernel that then ran flat out",
+    plainSummary:
+      "Found that same repetitive loop, then watched it actually run -- continuously, at close to full processor speed, for tens of seconds. Ordinary apps don't stay this busy this long.",
     severity: "high",
     weight: 45,
     reference: "MINOS: A Lightweight Real-Time Cryptojacking Detection System",
@@ -433,6 +470,8 @@ const RUNTIME_RULES: RuntimeRule[] = [
   {
     id: "worker-fan-out",
     title: "Executes in several workers at once",
+    plainSummary:
+      "Runs the same code across most of your CPU's cores at once via background workers -- a way to make heavy computation faster, mining included.",
     severity: "medium",
     weight: 20,
     reference: "Silent Spring: Characterizing Cryptojacking in the Wild",
@@ -458,6 +497,8 @@ const RUNTIME_RULES: RuntimeRule[] = [
   {
     id: "persistent-socket-traffic",
     title: "Keeps a socket busy while it computes",
+    plainSummary:
+      "Kept a network connection busy while it was computing -- consistent with reporting work back to a remote server.",
     severity: "low",
     weight: 12,
     evaluate: (r) => {
@@ -475,6 +516,8 @@ const RUNTIME_RULES: RuntimeRule[] = [
   {
     id: "runtime-not-yet-observed",
     title: "Runtime behaviour not observed for long enough",
+    plainSummary:
+      "Hasn't been watched running long enough yet to say anything about its behavior -- check back after using the page a bit longer.",
     severity: "info",
     weight: 0,
     evaluate: (r) => {
@@ -510,6 +553,7 @@ const RUNTIME_RULES: RuntimeRule[] = [
 const CLASSIFIER_RULE = {
   id: "classifier-opinion",
   title: "A trained classifier considers this module suspicious",
+  plainSummary: "A trained pattern-matching model flags this module as statistically similar to known cryptomining code.",
   severity: "medium" as Severity,
   weight: 18,
   reference: "Deep-Wasm: Detecting Malicious WebAssembly Binaries via Deep Learning",
@@ -551,7 +595,14 @@ function classifierHit(model: ClassifierModel, features: ModuleFeatures): RuleHi
 /* ------------------------------------------------------------------ */
 
 function toFinding(
-  rule: { id: string; title: string; severity: Severity; weight: number; reference?: string },
+  rule: {
+    id: string;
+    title: string;
+    plainSummary: string;
+    severity: Severity;
+    weight: number;
+    reference?: string;
+  },
   hit: RuleHit,
   kind: FindingKind,
 ): Finding {
@@ -562,6 +613,7 @@ function toFinding(
     confidence: Number(hit.confidence.toFixed(3)),
     weight: rule.weight,
     evidence: hit.evidence,
+    plainSummary: rule.plainSummary,
     kind,
     ...(rule.reference !== undefined ? { reference: rule.reference } : {}),
   };
@@ -607,6 +659,7 @@ export function evaluateHeuristics(
 export interface RuleSummary {
   id: string;
   title: string;
+  plainSummary: string;
   severity: Severity;
   weight: number;
   reference?: string;
@@ -617,9 +670,10 @@ export interface RuleSummary {
 /** Every rule the engine can produce, for documentation and UI legends. */
 export function listRules(): RuleSummary[] {
   const summarise = (kind: RuleSummary["kind"]) =>
-    ({ id, title, severity, weight, reference }: Omit<Rule, "evaluate">): RuleSummary => ({
+    ({ id, title, plainSummary, severity, weight, reference }: Omit<Rule, "evaluate">): RuleSummary => ({
       id,
       title,
+      plainSummary,
       severity,
       weight,
       kind,

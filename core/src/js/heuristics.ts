@@ -56,6 +56,8 @@ interface JsRuleHit {
 interface JsRule {
   id: string;
   title: string;
+  /** See `Finding.plainSummary`. */
+  plainSummary: string;
   severity: Severity;
   weight: number;
   reference?: string;
@@ -74,6 +76,7 @@ const JS_RULES: JsRule[] = [
   {
     id: "js-known-miner-family",
     title: "Names a known browser mining family",
+    plainSummary: "Directly names a known cryptomining library or service in the script.",
     severity: "high",
     weight: 45,
     reference: "Silent Spring: Characterizing Cryptojacking in the Wild",
@@ -89,6 +92,7 @@ const JS_RULES: JsRule[] = [
   {
     id: "js-mining-pool-endpoint",
     title: "Contains a mining pool address",
+    plainSummary: "Connects to what looks like a cryptomining pool server address.",
     severity: "high",
     weight: 35,
     reference: "Silent Spring: Characterizing Cryptojacking in the Wild",
@@ -107,6 +111,8 @@ const JS_RULES: JsRule[] = [
   {
     id: "js-obfuscated-source",
     title: "Source is escaped rather than merely minified",
+    plainSummary:
+      "The code is deliberately scrambled to be unreadable -- beyond normal minification, which just shortens code without hiding it.",
     severity: "medium",
     weight: 20,
     evaluate: (f) => {
@@ -124,6 +130,8 @@ const JS_RULES: JsRule[] = [
   {
     id: "js-decoded-code-execution",
     title: "Builds code at runtime out of encoded data",
+    plainSummary:
+      "Decodes hidden data and then runs it as code -- a common way to sneak in a payload that isn't visible by just reading the script.",
     severity: "high",
     weight: 30,
     evaluate: (f) => {
@@ -149,6 +157,8 @@ const JS_RULES: JsRule[] = [
   {
     id: "js-miner-bootstrap-shape",
     title: "Has the shape of a WebAssembly miner's loader",
+    plainSummary:
+      "Has the exact startup pattern of a browser miner: loads a compiled module, spins up one worker per CPU core, and opens a network connection.",
     severity: "medium",
     weight: 25,
     reference: "MINOS: A Lightweight Real-Time Cryptojacking Detection System",
@@ -173,6 +183,8 @@ const JS_RULES: JsRule[] = [
   {
     id: "js-injects-remote-script",
     title: "Injects further scripts at runtime",
+    plainSummary:
+      "Loads and runs additional code from elsewhere at runtime -- common for ads and analytics, but also how hidden code gets pulled in.",
     severity: "low",
     weight: 8,
     evaluate: (f) => {
@@ -204,6 +216,7 @@ export function evaluateJsHeuristics(features: JsFeatures): Finding[] {
       confidence: Number(hit.confidence.toFixed(3)),
       weight: rule.weight,
       evidence: hit.evidence,
+      plainSummary: rule.plainSummary,
       kind: "static",
       ...(rule.reference !== undefined ? { reference: rule.reference } : {}),
     });
@@ -234,6 +247,8 @@ export function evaluateScriptInventory(scripts: readonly ScriptReference[]): Fi
     {
       id: "js-third-party-unpinned",
       title: "Runs third-party scripts with no integrity pin",
+      plainSummary:
+        "Loads scripts from other websites without verifying they haven't been tampered with -- whoever controls those sites controls code running on this page.",
       severity: "info",
       weight: 6,
       confidence: 0.35,
