@@ -7,69 +7,187 @@
  * unless the extension is pinned. This page exists so the extension can show
  * its own work -- what it saw, when, and whether its moving parts are alive.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { ActivityEvent, ActivityReport, ModuleRow } from "../shared/protocol";
-import type { Finding } from "@wasm-sentry/core";
 import { duration, formatBytes, hostOf, relativeTime } from "./format";
+import { CaughtByStrip, KindBadge, LayerLegend } from "../ui/layers";
+import { useArmed, useCountUp } from "../ui/motion";
+import { bucketByTime, sparklinePath } from "../ui/sparkline";
+import { useScrollSpy } from "../ui/scroll-spy";
+import { useElementWidth } from "../ui/measure";
 import "./dashboard.css";
 
 const POLL_MS = 1500;
 
-const FINDING_KIND_LABELS: Record<Finding["kind"], string> = {
-  static: "Rule",
-  runtime: "Behavior",
-  model: "AI",
-};
+/** The window the activity sparkline covers, and how finely it is sliced. */
+const SPARK_SPAN_MS = 5 * 60 * 1000;
+const SPARK_BUCKETS = 60;
+const SPARK_HEIGHT = 52;
+const SPARK_PAD = 3;
 
-const FINDING_KIND_TITLES: Record<Finding["kind"], string> = {
-  static: "Static rule — the bytes, before anything runs",
-  runtime: "Runtime rule — what the module was observed doing",
-  model: "Trained classifier — a model's opinion, not a measurement",
-};
+/**
+ * The sections the nav offers, in page order.
+ *
+ * Module-level so the reference is stable: `useScrollSpy` rebuilds its
+ * observer whenever this changes, and an array built during render changes on
+ * every one of the twice-a-second polls.
+ */
+const SECTIONS = ["status", "activity", "modules", "settings"] as const;
 
-function KindBadge({ kind }: { kind: Finding["kind"] }): React.JSX.Element {
+/* ------------------------------------------------------------------ */
+/* Hero: the top line, and the shape of the last five minutes          */
+/* ------------------------------------------------------------------ */
+
+const FLAGGED_LEVELS = new Set(["medium", "high", "critical"]);
+
+/** One large figure. The value counts rather than jumping -- see `useCountUp`. */
+function HeroFigure({
+  label,
+  value,
+  unit,
+  foot,
+  tone = "neutral",
+  index,
+}: {
+  label: string;
+  value: number;
+  unit?: string;
+  foot: string;
+  tone?: "neutral" | "good" | "warn" | "bad";
+  index: number;
+}): React.JSX.Element {
+  const shown = useCountUp(value);
   return (
-    <span className={`kind-badge k-${kind}`} title={FINDING_KIND_TITLES[kind]}>
-      {FINDING_KIND_LABELS[kind]}
-    </span>
-  );
-}
-
-/** The three detection layers, stated once so a badge on a finding is legible without a lookup. */
-function LayerLegend(): React.JSX.Element {
-  return (
-    <div className="layers">
-      {(["static", "runtime", "model"] as const).map((kind) => (
-        <span key={kind} className={`layer-chip k-${kind}`} title={FINDING_KIND_TITLES[kind]}>
-          <span className="dot" />
-          {FINDING_KIND_LABELS[kind]}
-        </span>
-      ))}
+    <div className={`hero-figure tone-${tone}`} style={{ "--i": index } as React.CSSProperties}>
+      <span className="label">{label}</span>
+      <span className="value">
+        {shown}
+        {unit && <span className="unit">{unit}</span>}
+      </span>
+      <span className="foot">{foot}</span>
     </div>
   );
 }
 
 /**
- * Per-module "caught by" counts, for a presenter who wants to point at one
- * spot and say which layer found what -- without scrolling and reading
- * every finding's badge individually.
+ * Captures per five-second slice over the last five minutes.
+ *
+ * The feed below answers "what happened"; this answers "how busy has this
+ * been", which is the question an audience actually has and the only thing on
+ * the page with a shape rather than a value. It is drawn from the same events
+ * the table lists -- there is no separate accounting that could disagree with
+ * it.
  */
-function CaughtByStrip({ findings }: { findings: readonly Finding[] }): React.JSX.Element | null {
-  if (findings.length === 0) return null;
-  const counts = { static: 0, runtime: 0, model: 0 } as Record<Finding["kind"], number>;
-  for (const finding of findings) counts[finding.kind]++;
+function ActivitySpark({ events, now }: { events: ActivityEvent[]; now: number }): React.JSX.Element {
+  // Drawn at the real pixel width of its container rather than into a fixed
+  // viewBox that is then stretched -- see `useElementWidth` for why the
+  // stretched version cannot animate its own stroke correctly.
+  const [host, setHost] = useState<HTMLDivElement | null>(null);
+  const width = useElementWidth(host);
+
+  const geometry = useMemo(() => {
+    const counts = bucketByTime(
+      events.map((event) => event.timestamp),
+      { now, spanMs: SPARK_SPAN_MS, buckets: SPARK_BUCKETS },
+    );
+    return sparklinePath(counts, { width, height: SPARK_HEIGHT, pad: SPARK_PAD });
+  }, [events, now, width]);
+
+  // The trace draws itself in by walking the dash offset down from the full
+  // path length, once the undrawn state has painted.
+  const drawn = useArmed();
+
+  const floor = SPARK_HEIGHT - SPARK_PAD;
 
   return (
-    <div className="caught-by">
-      {(["static", "runtime", "model"] as const)
-        .filter((kind) => counts[kind] > 0)
-        .map((kind) => (
-          <span key={kind} className={`caught-by-item k-${kind}`} title={FINDING_KIND_TITLES[kind]}>
-            <span className="dot" />
-            {counts[kind]} {FINDING_KIND_LABELS[kind]}
-          </span>
-        ))}
+    <div className="spark">
+      <div className="spark-head">
+        <span className="legend">Activity · last 5 min</span>
+        <span className="peak">
+          {geometry.peak === 0 ? "quiet" : `peak ${geometry.peak}/5s`}
+        </span>
+      </div>
+      <div className="spark-box" ref={setHost}>
+        <svg
+          className="spark-chart"
+          width={width}
+          height={SPARK_HEIGHT}
+          viewBox={`0 0 ${width} ${SPARK_HEIGHT}`}
+          role="img"
+          aria-label={
+            geometry.peak === 0
+              ? "No captures in the last five minutes"
+              : `Capture activity over the last five minutes, peaking at ${geometry.peak} in one five-second slice`
+          }
+        >
+          <defs>
+            <linearGradient id="spark-fill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.24" />
+              <stop offset="100%" stopColor="var(--accent)" stopOpacity="0" />
+            </linearGradient>
+          </defs>
+          <line className="spark-baseline" x1="0" y1={floor} x2={width} y2={floor} />
+          {geometry.peak > 0 && <path className="spark-area" d={geometry.area} />}
+          <path
+            className="spark-line"
+            d={geometry.line}
+            strokeDasharray={geometry.length}
+            strokeDashoffset={drawn ? 0 : geometry.length}
+          />
+        </svg>
+      </div>
+    </div>
+  );
+}
+
+function Hero({
+  modules,
+  events,
+  now,
+}: {
+  modules: ModuleRow[];
+  events: ActivityEvent[];
+  now: number;
+}): React.JSX.Element {
+  const flagged = modules.filter((module) =>
+    FLAGGED_LEVELS.has(module.analysis?.risk?.level ?? ""),
+  ).length;
+
+  const peak = modules.reduce(
+    (highest, module) => Math.max(highest, module.analysis?.risk?.score ?? 0),
+    0,
+  );
+
+  const sites = new Set(modules.map((module) => hostOf(module.lastPageUrl))).size;
+
+  return (
+    <div className="hero">
+      <div className="hero-figures">
+        <HeroFigure
+          index={0}
+          label="Modules"
+          value={modules.length}
+          foot="captured and stored"
+        />
+        <HeroFigure
+          index={1}
+          label="Flagged"
+          value={flagged}
+          tone={flagged > 0 ? "warn" : "good"}
+          foot={flagged > 0 ? "scored medium or above" : "nothing above low"}
+        />
+        <HeroFigure
+          index={2}
+          label="Peak score"
+          value={peak}
+          unit="/100"
+          tone={peak >= 60 ? "bad" : peak >= 30 ? "warn" : "good"}
+          foot="the worst single module"
+        />
+        <HeroFigure index={3} label="Sites" value={sites} foot="distinct hosts seen" />
+      </div>
+      <ActivitySpark events={events} now={now} />
     </div>
   );
 }
@@ -83,14 +201,16 @@ function StatusCard({
   value,
   tone = "neutral",
   note,
+  index,
 }: {
   label: string;
   value: string;
   tone?: "neutral" | "good" | "warn";
   note?: string | undefined;
+  index: number;
 }): React.JSX.Element {
   return (
-    <div className={`card tone-${tone}`}>
+    <div className={`card tone-${tone}`} style={{ "--i": index } as React.CSSProperties}>
       <div className="card-label">{label}</div>
       <div className="card-value">{value}</div>
       {note && <div className="card-note">{note}</div>}
@@ -103,29 +223,33 @@ function Status({ report, now }: { report: ActivityReport; now: number }): React
   const notificationsOk = status.notificationLevel === "granted";
 
   return (
-    <section>
+    <section id="status">
       <h2>Status</h2>
       <div className="cards">
         <StatusCard
+          index={0}
           label="Watching"
           value="Active"
           tone="good"
           note={`worker up ${duration(now - status.workerStartedAt)}`}
         />
         <StatusCard
+          index={1}
           label="Last capture"
           value={status.lastCaptureAt ? relativeTime(status.lastCaptureAt, now) : "none yet"}
           tone={status.lastCaptureAt ? "good" : "neutral"}
           note={status.lastCaptureAt ? undefined : "visit a page that uses WebAssembly"}
         />
-        <StatusCard label="Modules stored" value={String(status.artifactCount)} />
+        <StatusCard index={2} label="Modules stored" value={String(status.artifactCount)} />
         <StatusCard
+          index={3}
           label="Network observer"
           value={status.networkObserver ? "On" : "Unavailable"}
           tone={status.networkObserver ? "good" : "warn"}
           note={status.networkObserver ? undefined : "worker-loaded modules will not be noticed"}
         />
         <StatusCard
+          index={4}
           label="Notifications"
           value={status.notificationLevel}
           tone={notificationsOk ? "good" : "warn"}
@@ -164,7 +288,7 @@ function LevelChip({ level, score }: { level?: string; score?: number }): React.
 
 function Activity({ events, now }: { events: ActivityEvent[]; now: number }): React.JSX.Element {
   return (
-    <section>
+    <section id="activity">
       <h2>
         Activity <span className="muted">({events.length})</span>
       </h2>
@@ -318,12 +442,25 @@ function ModuleCard({
   );
 }
 
+/**
+ * The bar's own palette, stated in tokens rather than in hex.
+ *
+ * These were literal hex values, which meant the one bar on the page that is
+ * meant to be read from across a room used a red that did not match the red on
+ * every chip beside it, and did not change with the theme at all.
+ *
+ * `unanalysed` is named explicitly. It used to fall through to a `var(--tag)`
+ * default that no longer exists, so the segment for every module the analyser
+ * has not reached yet drew as nothing -- silently under-reporting the part of
+ * the bar that says how much is still unknown.
+ */
 const RISK_LEVEL_COLORS: Record<string, string> = {
-  critical: "#a40e26",
-  high: "#d1242f",
-  medium: "#bf8700",
-  low: "#2da44e",
-  benign: "#2da44e",
+  critical: "var(--crit)",
+  high: "var(--bad)",
+  medium: "var(--warn)",
+  low: "var(--good)",
+  benign: "var(--good)",
+  unanalysed: "var(--line-strong)",
 };
 
 const RISK_LEVEL_ORDER = ["critical", "high", "medium", "low", "benign", "unanalysed"] as const;
@@ -342,18 +479,7 @@ const RISK_LEVEL_LABELS: Record<string, string> = {
  * module, at a glance, as a single bar instead of a list to be read.
  */
 function RiskBreakdown({ modules }: { modules: ModuleRow[] }): React.JSX.Element | null {
-  const [filled, setFilled] = useState(false);
-
-  useEffect(() => {
-    let raf2 = 0;
-    const raf1 = requestAnimationFrame(() => {
-      raf2 = requestAnimationFrame(() => setFilled(true));
-    });
-    return () => {
-      cancelAnimationFrame(raf1);
-      cancelAnimationFrame(raf2);
-    };
-  }, [modules.length]);
+  const filled = useArmed();
 
   if (modules.length === 0) return null;
 
@@ -374,7 +500,7 @@ function RiskBreakdown({ modules }: { modules: ModuleRow[] }): React.JSX.Element
             className="risk-bar-seg"
             style={{
               width: filled ? `${((counts[level] ?? 0) / total) * 100}%` : "0%",
-              background: RISK_LEVEL_COLORS[level] ?? "var(--tag)",
+              background: RISK_LEVEL_COLORS[level] ?? "var(--line-strong)",
             }}
             title={`${counts[level]} ${RISK_LEVEL_LABELS[level]}`}
           />
@@ -383,7 +509,7 @@ function RiskBreakdown({ modules }: { modules: ModuleRow[] }): React.JSX.Element
       <div className="risk-bar-legend">
         {segments.map((level) => (
           <span key={level} className="risk-bar-legend-item">
-            <span className="dot" style={{ background: RISK_LEVEL_COLORS[level] ?? "var(--muted)" }} />
+            <span className="dot" style={{ background: RISK_LEVEL_COLORS[level] ?? "var(--line-strong)" }} />
             {counts[level]} {RISK_LEVEL_LABELS[level]}
           </span>
         ))}
@@ -394,7 +520,7 @@ function RiskBreakdown({ modules }: { modules: ModuleRow[] }): React.JSX.Element
 
 function Modules({ modules, now }: { modules: ModuleRow[]; now: number }): React.JSX.Element {
   return (
-    <section>
+    <section id="modules">
       <h2>
         Modules <span className="muted">({modules.length})</span>
       </h2>
@@ -462,29 +588,82 @@ function Settings({
   onClear: () => void;
 }): React.JSX.Element {
   return (
-    <section>
+    <section id="settings">
       <h2>Settings</h2>
-      {TOGGLES.map((toggle) => (
-        <label key={toggle.key} className="toggle">
-          <input
-            type="checkbox"
-            checked={settings[toggle.key] === true}
-            onChange={(event) => onChange({ [toggle.key]: event.target.checked })}
-          />
-          <span>
-            <strong>{toggle.label}</strong>
-            <span className="muted"> {toggle.description}</span>
-          </span>
-        </label>
-      ))}
+      <div className="settings-panel">
+        {TOGGLES.map((toggle) => (
+          <label key={toggle.key} className="toggle">
+            <input
+              type="checkbox"
+              checked={settings[toggle.key] === true}
+              onChange={(event) => onChange({ [toggle.key]: event.target.checked })}
+            />
+            <span>
+              <strong>{toggle.label}</strong>
+              <span className="muted">{toggle.description}</span>
+            </span>
+          </label>
+        ))}
+      </div>
 
-      <p>
+      {/* Set apart from the toggles above it. Everything in that panel is
+          reversible with a second click; this is not, and a destructive
+          control sitting in the same rhythm as six harmless ones is how it
+          gets pressed by accident. */}
+      <div className="danger-zone">
         <button className="danger" onClick={onClear}>
           Clear stored data
         </button>
-        <span className="muted"> Removes every captured module, verdict and activity entry.</span>
-      </p>
+        <span className="muted">Removes every captured module, verdict and activity entry.</span>
+      </div>
     </section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Page shell                                                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The pulse is only shown once a report has actually arrived. A heartbeat
+ * beside a page that has not heard from the service worker would be claiming
+ * something the page does not know yet.
+ */
+function Masthead({ live }: { live: boolean }): React.JSX.Element {
+  return (
+    <header className="masthead">
+      <h1>
+        {live && <span className="pulse" />}
+        <span className="brand-a">Wasm</span>
+        <span className="brand-b">-Sentry</span>
+      </h1>
+      <span className="tagline">auditing every page you open · refreshes automatically</span>
+    </header>
+  );
+}
+
+const SECTION_LABELS: Record<(typeof SECTIONS)[number], string> = {
+  status: "Status",
+  activity: "Activity",
+  modules: "Modules",
+  settings: "Settings",
+};
+
+/**
+ * Plain anchors, so the nav works before React has hydrated anything and
+ * keyboard and middle-click behave the way they do everywhere else. The
+ * scroll-spy only decorates it.
+ */
+function SectionNav(): React.JSX.Element {
+  const active = useScrollSpy(SECTIONS);
+  return (
+    <nav className="sections" aria-label="Sections">
+      {SECTIONS.map((id) => (
+        <a key={id} href={`#${id}`} aria-current={active === id ? "true" : undefined}>
+          {SECTION_LABELS[id]}
+        </a>
+      ))}
+    </nav>
   );
 }
 
@@ -555,25 +734,33 @@ function Dashboard(): React.JSX.Element {
   if (!report) {
     return (
       <main>
-        <h1>
-          <span className="brand-a">Wasm</span>
-          <span className="brand-b">-Sentry</span>
-        </h1>
-        <p className={error ? "error" : "muted"}>{error ?? "Loading…"}</p>
+        <Masthead live={false} />
+        {error ? (
+          <p className="error">{error}</p>
+        ) : (
+          // Shaped like the hero and status cards it is standing in for, so
+          // the page does not jump when the first poll answers.
+          <div className="loading" aria-label="Loading">
+            <div className="skeleton sk-hero" />
+            <div className="sk-cards">
+              <div className="skeleton sk-card" />
+              <div className="skeleton sk-card" />
+              <div className="skeleton sk-card" />
+              <div className="skeleton sk-card" />
+            </div>
+          </div>
+        )}
       </main>
     );
   }
 
   return (
     <main>
-      <header className="page-head">
-        <h1>
-          <span className="pulse" />
-          <span className="brand-a">Wasm</span>
-          <span className="brand-b">-Sentry</span>
-        </h1>
-        <span className="muted">auditing every page you open · refreshes automatically</span>
-      </header>
+      <Masthead live />
+
+      <Hero modules={report.modules} events={report.events} now={now} />
+
+      <SectionNav />
 
       <LayerLegend />
 

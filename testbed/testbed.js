@@ -203,7 +203,12 @@ const RUNS = {
 const SLOW = new Set(["grind"]);
 
 document.addEventListener("click", async (event) => {
-  const which = event.target.dataset?.run;
+  // `closest`, not `event.target.dataset`. The buttons contain a span holding
+  // the run's number, and a click that lands on that span reports the span as
+  // its target -- which carries no `data-run`, so the press did nothing at all.
+  // CSS can hide the span from hit-testing, and does, but relying on that
+  // makes a stylesheet load-bearing for whether a button works.
+  const which = event.target.closest?.("[data-run]")?.dataset.run;
   if (!which) return;
 
   const names = which === "all" ? Object.keys(RUNS).filter((name) => !SLOW.has(name)) : [which];

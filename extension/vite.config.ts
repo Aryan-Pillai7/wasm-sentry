@@ -19,6 +19,12 @@ export default defineConfig({
       },
       output: {
         entryFileNames: "[name].js",
+        // The popup and the dashboard share React, so Rollup splits it into a
+        // common chunk and names that chunk after whichever module in it it
+        // happened to pick -- which has already been `jsx-runtime` and
+        // `motion`, the second of which reads as though 190kB of animation
+        // code shipped. Naming it plainly says what it is.
+        chunkFileNames: "assets/vendor-[hash].js",
       },
     },
   },

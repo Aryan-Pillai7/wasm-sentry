@@ -5,65 +5,270 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Wasm-Sentry testbed</title>
     <style>
-      :root { color-scheme: light dark; }
+      /*
+       * This page is what is actually on screen while somebody is being shown
+       * the extension, so it is part of the interface and is styled as one.
+       *
+       * It shares the palette and the type system with the popup and the
+       * dashboard but imports nothing: it is a plain static page with no build
+       * step, on purpose, so it can be opened straight from disk when a server
+       * is inconvenient. Restating a dozen custom properties is the price of
+       * that. See docs/DESIGN.md.
+       */
+      :root {
+        color-scheme: light dark;
+        --bg: #eceff5;
+        --panel: #fbfcfe;
+        --raised: #ffffff;
+        --sunken: #e5e9f0;
+        --fg: #14161a;
+        --muted: #56616f;
+        --faint: #8b94a3;
+        --line: #dbe1ea;
+        --line-strong: #c3ccda;
+        --accent: #1558d6;
+        --good: #1a7f37;
+        --warn: #9a6700;
+        --bad: #cf222e;
+
+        --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI Variable Text",
+          "Segoe UI", Roboto, sans-serif;
+        --font-mono: ui-monospace, "Cascadia Mono", SFMono-Regular, "SF Mono", Menlo,
+          Consolas, monospace;
+
+        --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0b0d11;
+          --panel: #11151c;
+          --raised: #161b23;
+          --sunken: #0c0f14;
+          --fg: #e6e9ee;
+          --muted: #99a3b1;
+          --faint: #6c7581;
+          --line: #232936;
+          --line-strong: #333b4a;
+          --accent: #58a6ff;
+          --good: #3fb950;
+          --warn: #d29922;
+          --bad: #f85149;
+        }
+      }
+
+      * { box-sizing: border-box; }
+
       body {
-        font: 14px/1.5 ui-sans-serif, system-ui, sans-serif;
-        max-width: 760px;
-        margin: 40px auto;
-        padding: 0 20px;
+        margin: 0;
+        padding: 48px 24px 72px;
+        background: var(--bg);
+        color: var(--fg);
+        font: 14px/1.55 var(--font-sans);
+        font-variant-numeric: tabular-nums;
+        -webkit-font-smoothing: antialiased;
       }
-      h1 { font-size: 20px; }
-      p.lede { color: #6b7280; }
-      button { font: inherit; padding: 6px 12px; margin: 2px 4px 2px 0; }
-      #log {
-        margin-top: 20px;
-        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+
+      main { max-width: 860px; margin: 0 auto; }
+
+      /* ---- masthead ---- */
+
+      header { border-bottom: 1px solid var(--line); padding-bottom: 18px; }
+
+      h1 {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin: 0;
+        font-family: var(--font-mono);
+        font-size: 18px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+
+      .brand-a { color: var(--accent); }
+      .brand-b { color: var(--fg); opacity: 0.55; font-weight: 500; }
+      .brand-c { color: var(--faint); font-weight: 500; }
+
+      .lede { margin: 12px 0 0; max-width: 62ch; color: var(--muted); font-size: 13px; }
+
+      /* ---- groups of runs ---- */
+
+      h2 {
+        margin: 32px 0 12px;
+        font-family: var(--font-mono);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+
+      .runs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+      @media (max-width: 680px) { .runs { grid-template-columns: repeat(2, 1fr); } }
+      @media (max-width: 460px) { .runs { grid-template-columns: 1fr; } }
+
+      button {
+        display: flex;
+        align-items: baseline;
+        gap: 9px;
+        width: 100%;
+        padding: 10px 12px;
+        border: 1px solid var(--line-strong);
+        border-radius: 5px;
+        background: var(--raised);
+        color: var(--fg);
+        font: inherit;
+        font-size: 13px;
+        text-align: left;
+        cursor: pointer;
+        transition:
+          border-color 120ms var(--ease-out),
+          box-shadow 120ms var(--ease-out),
+          transform 120ms var(--ease-out);
+      }
+
+      button:hover {
+        border-color: var(--accent);
+        box-shadow: 0 1px 3px rgb(16 22 33 / 8%);
+        transform: translateY(-1px);
+      }
+
+      button:active { transform: translateY(0); }
+
+      button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+      /* The index is set in mono and dimmed: it is a reference for talking
+         about the buttons out loud, not part of the label. It is transparent
+         to the pointer so it never becomes the target of a click meant for
+         the button -- belt and braces, since testbed.js resolves the button
+         with `closest` and does not depend on this. */
+      button .n {
+        flex-shrink: 0;
+        pointer-events: none;
+        font-family: var(--font-mono);
+        font-size: 11px;
+        font-weight: 700;
+        color: var(--faint);
+      }
+
+      button.wide { grid-column: 1 / -1; justify-content: center; }
+
+      button.heavy {
+        border-color: color-mix(in srgb, var(--warn) 45%, var(--line));
+        background: color-mix(in srgb, var(--warn) 7%, var(--raised));
+      }
+      button.heavy:hover { border-color: var(--warn); }
+      button.heavy .n { color: var(--warn); }
+
+      button.go {
+        border-color: color-mix(in srgb, var(--accent) 50%, var(--line));
+        background: color-mix(in srgb, var(--accent) 10%, var(--raised));
+        color: var(--accent);
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        font-family: var(--font-mono);
         font-size: 12px;
-        white-space: pre-wrap;
-        border: 1px solid #8884;
-        border-radius: 8px;
-        padding: 12px;
-        min-height: 200px;
       }
-      .ok { color: #2da44e; }
-      .warn { color: #bf8700; }
-      .err { color: #d1242f; }
+      button.go:hover { background: color-mix(in srgb, var(--accent) 18%, var(--raised)); }
+
+      .note {
+        margin: 12px 0 0;
+        padding: 10px 12px;
+        border-left: 2px solid var(--warn);
+        border-radius: 0 3px 3px 0;
+        background: color-mix(in srgb, var(--warn) 8%, transparent);
+        color: var(--muted);
+        font-size: 12.5px;
+      }
+
+      .note strong { color: var(--fg); }
+
+      /* ---- log ---- */
+
+
+      #log {
+        margin: 10px 0 0;
+        padding: 14px 16px;
+        min-height: 240px;
+        max-height: 460px;
+        overflow: auto;
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        background: var(--sunken);
+        font-family: var(--font-mono);
+        font-size: 12px;
+        line-height: 1.6;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        color: var(--muted);
+        scrollbar-width: thin;
+        scrollbar-color: var(--line-strong) transparent;
+      }
+
+      #log .ok { color: var(--good); }
+      #log .warn { color: var(--warn); }
+      #log .err { color: var(--bad); font-weight: 600; }
     </style>
   </head>
   <body>
-    <h1>Wasm-Sentry testbed</h1>
-    <p class="lede">
-      Each button loads a module through a different WebAssembly entry point. Open the Wasm-Sentry
-      popup afterwards and check that each one was captured, parsed and scored.
-    </p>
+    <main>
+      <header>
+        <h1>
+          <span class="brand-a">Wasm</span><span class="brand-b">-Sentry</span>
+          <span class="brand-c">testbed</span>
+        </h1>
+        <p class="lede">
+          Each button loads a module through a different WebAssembly entry point. Run one, then
+          open the Wasm-Sentry popup and check that it was captured, parsed and scored.
+        </p>
+      </header>
 
-    <p>
-      <button data-run="streaming">1. instantiateStreaming</button>
-      <button data-run="buffer">2. instantiate(buffer)</button>
-      <button data-run="compile">3. compile + instantiate(Module)</button>
-      <button data-run="ctor">4. new WebAssembly.Module</button>
-      <button data-run="blob">5. blob: URL (off-network)</button>
-      <button data-run="dedupe">6. same bytes twice (dedup)</button>
-      <button data-run="worker">7. inside a Worker</button>
-      <button data-run="moduleWorker">8. inside a module Worker</button>
-      <button data-run="nestedWorker">9. a Worker inside a Worker</button>
-    </p>
-    <p>
-      <button data-run="grind"><strong>10. grind for 25s across every core</strong></button>
-    </p>
-    <p>
-      <button data-run="jsInline">11. an obfuscated inline script</button>
-      <button data-run="jsThirdParty">12. an unpinned third-party script</button>
-    </p>
-    <p class="lede">
-      Buttons 11 and 12 need <strong>Analyse JavaScript</strong> turned on in the
-      dashboard. It is off by default: it is the only part of the extension that
-      reads source a page has not already published to anyone else.
-    </p>
+      <h2>Entry points</h2>
+      <div class="runs">
+        <button data-run="streaming"><span class="n">01</span> instantiateStreaming</button>
+        <button data-run="buffer"><span class="n">02</span> instantiate(buffer)</button>
+        <button data-run="compile"><span class="n">03</span> compile + instantiate</button>
+        <button data-run="ctor"><span class="n">04</span> new WebAssembly.Module</button>
+        <button data-run="blob"><span class="n">05</span> blob: URL, off-network</button>
+        <button data-run="dedupe"><span class="n">06</span> same bytes twice</button>
+      </div>
 
-    <p><button data-run="all"><strong>Run all</strong></button></p>
+      <h2>Workers</h2>
+      <div class="runs">
+        <button data-run="worker"><span class="n">07</span> inside a Worker</button>
+        <button data-run="moduleWorker"><span class="n">08</span> inside a module Worker</button>
+        <button data-run="nestedWorker"><span class="n">09</span> a Worker inside a Worker</button>
+      </div>
 
-    <div id="log">ready.</div>
+      <h2>Load</h2>
+      <div class="runs">
+        <button class="wide heavy" data-run="grind">
+          <span class="n">10</span> grind for 25s across every core
+        </button>
+      </div>
+
+      <h2>JavaScript</h2>
+      <div class="runs">
+        <button data-run="jsInline"><span class="n">11</span> an obfuscated inline script</button>
+        <button data-run="jsThirdParty"><span class="n">12</span> an unpinned third-party script</button>
+      </div>
+      <p class="note">
+        Buttons 11 and 12 need <strong>Analyse JavaScript</strong> turned on in the dashboard. It is
+        off by default: it is the only part of the extension that reads source a page has not
+        already published to anyone else.
+      </p>
+
+      <h2>Everything</h2>
+      <div class="runs">
+        <button class="wide go" data-run="all">Run all</button>
+      </div>
+
+      <h2>Output</h2>
+      <div id="log">ready.</div>
+    </main>
 
     <script src="./testbed.js"></script>
   </body>
