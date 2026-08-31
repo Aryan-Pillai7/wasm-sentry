@@ -130,6 +130,8 @@ measured close to a full core of execution.
 
 ```bash
 npm run dev -w backend                                          # the upload API on :3000
+                                                                # prints an ExperimentalWarning for
+                                                                # node:sqlite; that is expected
 npm run train     -w @wasm-sentry/core -- corpus/ --out m.json  # train + evaluate a classifier
 npm run inspect   -w @wasm-sentry/core -- path/to/module.wasm   # full report + risk
 npm run calibrate -w @wasm-sentry/core -- path/to/module.wasm   # kernel candidates
@@ -283,12 +285,22 @@ docs/                    architecture, detection, api-spec, this file
     added, removed, reordered or rescaled. Inference refuses a model trained on
     a different version rather than scoring the wrong columns, which is the one
     failure here that produces confident nonsense with no way to notice.
-13. **JavaScript analysis is off by default, and that is the design, not an
+13. **The packed extension cannot be loaded in headless Chrome.** Chrome 151
+    ignores `--load-extension` in `--headless=new`, with or without
+    `--enable-unsafe-extension-debugging`; only Chrome's own component
+    extensions appear, no error is logged, and the content scripts simply never
+    run -- `globalThis.__wasmSentryInstalled` stays `false`. Nothing is wrong
+    with the extension when this happens. Verify the packaging by loading
+    `extension/dist` unpacked in a normal Chrome window; use
+    `testbed/standalone.html` for everything that only needs the capture layer,
+    since it loads the built injector as an ordinary page script and works
+    headlessly.
+14. **JavaScript analysis is off by default, and that is the design, not an
     oversight.** It is the only capture path that reads something the page has
     not published to anyone else. External script contents are never fetched,
     source is never stored, and `eval` is deliberately not hooked -- wrapping it
     turns direct eval into indirect eval and changes scoping.
-14. **Runtime thresholds are not corpus-calibrated, and the docs say so.** The
+15. **Runtime thresholds are not corpus-calibrated, and the docs say so.** The
     mechanism is measured; the lines drawn on it are conservative. If you tune
     them, `docs/detection.md` has to change with them, and no detection rate may
     be claimed either way.

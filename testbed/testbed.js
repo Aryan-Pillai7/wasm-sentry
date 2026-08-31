@@ -191,15 +191,32 @@ const RUNS = {
   },
 };
 
+/**
+ * Left out of "Run all" on purpose.
+ *
+ * `grind` pegs every core for twenty-five seconds. Run from a button labelled
+ * "Run all" it looks like the page has hung halfway through, and it makes the
+ * machine unusable while somebody is trying to read the popup -- which is the
+ * one thing they clicked the button to do. It stays available as its own
+ * button, where the cost is what was asked for.
+ */
+const SLOW = new Set(["grind"]);
+
 document.addEventListener("click", async (event) => {
   const which = event.target.dataset?.run;
   if (!which) return;
-  const names = which === "all" ? Object.keys(RUNS) : [which];
+
+  const names = which === "all" ? Object.keys(RUNS).filter((name) => !SLOW.has(name)) : [which];
   for (const name of names) {
     try {
       await RUNS[name]();
     } catch (error) {
       say(`${name} failed: ${error.message}`, "err");
     }
+  }
+
+  if (which === "all") {
+    say("", "");
+    say(`skipped: ${[...SLOW].join(", ")} -- run it on its own, it takes 25s at full tilt`, "warn");
   }
 });
