@@ -9,6 +9,9 @@ import type {
 } from "@wasm-sentry/core";
 import type { TabReport, TabArtifactView, TabScriptView } from "../shared/protocol";
 import { loadReport } from "./load-report";
+import { CaughtByStrip, KindBadge, LayerLegend } from "../ui/layers";
+import { ringGeometry } from "../ui/gauge";
+import { useArmed, useCountUp } from "../ui/motion";
 import "./popup.css";
 
 function formatBytes(size: number): string {
@@ -32,83 +35,52 @@ const LEVEL_LABELS: Record<string, string> = {
   critical: "Almost certainly unwanted",
 };
 
-const KIND_LABELS: Record<Finding["kind"], string> = {
-  static: "Rule",
-  runtime: "Behavior",
-  model: "AI",
-};
-
-const KIND_TITLES: Record<Finding["kind"], string> = {
-  static: "Static rule — the bytes, before anything runs",
-  runtime: "Runtime rule — what the module was observed doing",
-  model: "Trained classifier — a model's opinion, not a measurement",
-};
-
-function KindBadge({ kind }: { kind: Finding["kind"] }): React.JSX.Element {
-  return (
-    <span className={`kind-badge k-${kind}`} title={KIND_TITLES[kind]}>
-      {KIND_LABELS[kind]}
-    </span>
-  );
-}
-
-/** The three detection layers, stated once so a badge on a finding is legible without a lookup. */
-function LayerLegend(): React.JSX.Element {
-  return (
-    <div className="layers">
-      {(["static", "runtime", "model"] as const).map((kind) => (
-        <span key={kind} className={`layer-chip k-${kind}`} title={KIND_TITLES[kind]}>
-          <span className="dot" />
-          {KIND_LABELS[kind]}
-        </span>
-      ))}
-    </div>
-  );
-}
-
 /**
- * Per-module "caught by" counts, for a presenter who wants to point at one
- * spot and say which layer found what -- without scrolling and reading
- * every finding's badge individually.
+ * The score, as a dial.
+ *
+ * A stroked SVG arc rather than the `conic-gradient` this used to be. The
+ * gradient could not draw a track behind the unfilled portion, could not round
+ * the end of the arc, and could only be animated through a registered custom
+ * property; the arc gets all three and animates on `stroke-dashoffset`.
+ *
+ * The arc and the figure inside it are driven separately -- CSS transition and
+ * `useCountUp` -- but over the same duration and matched curves, so they
+ * arrive together.
  */
-function CaughtByStrip({ findings }: { findings: readonly Finding[] }): React.JSX.Element | null {
-  if (findings.length === 0) return null;
-  const counts = { static: 0, runtime: 0, model: 0 } as Record<Finding["kind"], number>;
-  for (const finding of findings) counts[finding.kind]++;
-
-  return (
-    <span className="caught-by">
-      {(["static", "runtime", "model"] as const)
-        .filter((kind) => counts[kind] > 0)
-        .map((kind) => (
-          <span key={kind} className={`caught-by-item k-${kind}`} title={KIND_TITLES[kind]}>
-            <span className="dot" />
-            {counts[kind]} {KIND_LABELS[kind]}
-          </span>
-        ))}
-    </span>
-  );
-}
-
-/** Fills from zero on mount/update rather than snapping straight to the score. */
 function ScoreGauge({ score }: { score: number }): React.JSX.Element {
-  const [pct, setPct] = useState(0);
+  const ring = ringGeometry(score, { radius: 23, stroke: 5 });
+  const shown = useCountUp(score);
 
-  useEffect(() => {
-    let raf2 = 0;
-    const raf1 = requestAnimationFrame(() => {
-      raf2 = requestAnimationFrame(() => setPct(score));
-    });
-    return () => {
-      cancelAnimationFrame(raf1);
-      cancelAnimationFrame(raf2);
-    };
-  }, [score]);
+  // The first paint must show an empty ring for the transition to have
+  // somewhere to animate from, or the arc is simply present at its final
+  // length. `useArmed` handles that, and the reduced-motion case with it.
+  const armed = useArmed();
 
   return (
-    <span className="score-gauge" style={{ "--pct": pct } as React.CSSProperties} title={`${score}/100`}>
-      <span>{score}</span>
-    </span>
+    <div className="gauge" title={`${score} out of 100`}>
+      <svg width={ring.size} height={ring.size} aria-hidden="true">
+        <circle
+          className="gauge-track"
+          cx={ring.centre}
+          cy={ring.centre}
+          r={ring.radius}
+          fill="none"
+          strokeWidth={ring.stroke}
+        />
+        <circle
+          className="gauge-arc"
+          cx={ring.centre}
+          cy={ring.centre}
+          r={ring.radius}
+          fill="none"
+          strokeWidth={ring.stroke}
+          strokeDasharray={ring.circumference}
+          strokeDashoffset={armed ? ring.offset : ring.circumference}
+        />
+      </svg>
+      <span className="gauge-value">{shown}</span>
+      <span className="gauge-of">/100</span>
+    </div>
   );
 }
 
@@ -123,17 +95,17 @@ function ScoreGauge({ score }: { score: number }): React.JSX.Element {
 function Scorecard({ card }: { card: PageScorecard }): React.JSX.Element {
   return (
     <section className={`scorecard level-${card.level}`}>
-      <div className="score-row">
-        <span className="level">{LEVEL_LABELS[card.level] ?? card.level}</span>
-        {card.moduleCount > 0 && <ScoreGauge score={card.score} />}
+      {card.moduleCount > 0 && <ScoreGauge score={card.score} />}
+      <div className="score-text">
+        <div className="level">{LEVEL_LABELS[card.level] ?? card.level}</div>
+        <p className="headline">{card.headline}</p>
+        {card.unanalysedCount > 0 && (
+          <p className="caveat">
+            {card.unanalysedCount} module(s) were seen but not analysed — this verdict does not
+            cover them.
+          </p>
+        )}
       </div>
-      <p className="headline">{card.headline}</p>
-      {card.unanalysedCount > 0 && (
-        <p className="caveat">
-          {card.unanalysedCount} module(s) were seen but not analysed — this verdict does not cover
-          them.
-        </p>
-      )}
     </section>
   );
 }
@@ -196,9 +168,13 @@ function StaticFacts({ summary }: { summary: AnalysisSummary }): React.JSX.Eleme
         <div><dt>float</dt><dd>{percent(summary.floatRatio)}</dd></div>
         <div>
           <dt>memory</dt>
+          {/* "256p / 512p" does not fit a third of a 380px popup and was being
+              ellipsised down to "256p / ...", losing the ceiling -- which is
+              the half that says how far the module is allowed to grow. */}
           <dd>
-            {summary.memoryInitialPages}p
-            {summary.memoryMaxPages !== null ? ` / ${summary.memoryMaxPages}p` : ""}
+            {summary.memoryMaxPages !== null
+              ? `${summary.memoryInitialPages}/${summary.memoryMaxPages}p`
+              : `${summary.memoryInitialPages}p`}
           </dd>
         </div>
       </dl>
@@ -249,14 +225,20 @@ function RuntimeFacts({ runtime }: { runtime: RuntimeFeatures }): React.JSX.Elem
   );
 }
 
-function ArtifactCard({ artifact }: { artifact: TabArtifactView }): React.JSX.Element {
+function ArtifactCard({
+  artifact,
+  index,
+}: {
+  artifact: TabArtifactView;
+  index: number;
+}): React.JSX.Element {
   const label = artifact.url.startsWith("inline:")
     ? `compiled from memory (${artifact.api})`
     : artifact.url;
   const analysis = artifact.analysis;
 
   return (
-    <li className="artifact">
+    <li className="artifact" style={{ "--i": index } as React.CSSProperties}>
       <div className="artifact-head">
         <code className="hash">{artifact.hash.slice(0, 12)}</code>
         <span className="size">{formatBytes(artifact.size)}</span>
@@ -307,12 +289,18 @@ const SCRIPT_ORIGIN_LABELS: Record<string, string> = {
  * keep the source -- see the consent note in `script-hooks.ts` -- so there is
  * nothing here to show even if it were wanted.
  */
-function ScriptCard({ script }: { script: TabScriptView }): React.JSX.Element {
+function ScriptCard({
+  script,
+  index,
+}: {
+  script: TabScriptView;
+  index: number;
+}): React.JSX.Element {
   const analysis = script.analysis;
   const summary = analysis.summary;
 
   return (
-    <li className="artifact">
+    <li className="artifact" style={{ "--i": index } as React.CSSProperties}>
       <div className="artifact-head">
         <code className="hash">{script.hash.slice(0, 12)}</code>
         <span className="size">{formatBytes(script.byteLength)}</span>
@@ -400,7 +388,27 @@ function Popup(): React.JSX.Element {
     );
   }
 
-  if (!report) return <div className="panel muted">Reading capture log…</div>;
+  // Shaped like the report that is about to replace it, so the panel does not
+  // resize under the pointer when the first poll answers. A line of text
+  // reading "Reading capture log…" was honest and told the reader nothing.
+  if (!report) {
+    return (
+      <div className="panel">
+        <header>
+          <h1>
+            <span className="pulse" />
+            <span className="brand-a">Wasm</span>
+            <span className="brand-b">-Sentry</span>
+          </h1>
+        </header>
+        <div className="loading" aria-label="Reading capture log">
+          <div className="skeleton sk-card" />
+          <div className="skeleton sk-row" />
+          <div className="skeleton sk-row" />
+        </div>
+      </div>
+    );
+  }
 
   const notes = report.notes;
 
@@ -439,8 +447,8 @@ function Popup(): React.JSX.Element {
         </p>
       ) : (
         <ul className="artifacts">
-          {scoredArtifacts.map((artifact) => (
-            <ArtifactCard key={artifact.hash} artifact={artifact} />
+          {scoredArtifacts.map((artifact, index) => (
+            <ArtifactCard key={artifact.hash} artifact={artifact} index={index} />
           ))}
         </ul>
       )}
@@ -449,8 +457,8 @@ function Popup(): React.JSX.Element {
         <section className="notes">
           <h2>JavaScript ({scoredScripts.length})</h2>
           <ul className="artifacts">
-            {scoredScripts.map((script) => (
-              <ScriptCard key={script.hash} script={script} />
+            {scoredScripts.map((script, index) => (
+              <ScriptCard key={script.hash} script={script} index={index} />
             ))}
           </ul>
         </section>
@@ -463,12 +471,6 @@ function Popup(): React.JSX.Element {
         </section>
       )}
 
-      <p className="footer">
-        <button className="primary" onClick={() => void chrome.runtime.openOptionsPage()}>
-          Open dashboard
-        </button>
-        <span className="caveat">Runs on every page automatically.</span>
-      </p>
 
       {notes.length > 0 && (
         <section className="notes">
@@ -485,6 +487,13 @@ function Popup(): React.JSX.Element {
           </ul>
         </section>
       )}
+
+      <p className="footer">
+        <button className="primary" onClick={() => void chrome.runtime.openOptionsPage()}>
+          Open dashboard
+        </button>
+        <span className="caveat">Runs on every page automatically.</span>
+      </p>
     </div>
   );
 }

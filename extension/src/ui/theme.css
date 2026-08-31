@@ -1,0 +1,500 @@
+/**
+ * The visual system.
+ *
+ * Every colour, size, curve and duration the extension uses is declared here
+ * and nowhere else. The popup and the dashboard both import this before their
+ * own stylesheet; anything either of them adds on top is meant to be layout,
+ * not taste.
+ *
+ * Before this file existed the two surfaces kept separate copies of the
+ * palette and had already drifted apart -- the same muted grey was `#8b93a1`
+ * on one and `#9aa1ab` on the other, and the same role was `--tag-bg` here and
+ * `--tag` there. Nobody decided that; it just happened, which is exactly what
+ * a token layer is for.
+ *
+ * The reasoning behind these particular values is in `docs/DESIGN.md`.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  /* -- Surfaces: four steps, used in order as things come forward ---------- */
+  --bg: #eceff5;
+  --panel: #fbfcfe;
+  --raised: #ffffff;
+  --sunken: #e5e9f0;
+
+  /* -- Ink ---------------------------------------------------------------- */
+  --fg: #14161a;
+  /* Darker than it looks like it needs to be: this is the colour every
+     secondary label and every piece of evidence text uses, and at #64748b --
+     where it started -- it cleared 4.5:1 against the panel only just, and not
+     at all against the raised surface. */
+  --muted: #56616f;
+  --faint: #8b94a3;
+
+  /* -- Lines -------------------------------------------------------------- */
+  --line: #dbe1ea;
+  --line-strong: #c3ccda;
+
+  /* -- Accent: exactly one, and it never means severity -------------------- */
+  --accent: #1558d6;
+  --accent-soft: color-mix(in srgb, var(--accent) 10%, transparent);
+
+  /* -- Status: severity only ---------------------------------------------- */
+  --good: #1a7f37;
+  --warn: #9a6700;
+  --bad: #cf222e;
+  --crit: #a40e26;
+
+  /* -- Detection layers ---------------------------------------------------
+     Unchanged from the day they were chosen, and they must stay that way: a
+     reader learns this mapping once and it cannot move underneath them.
+     Deliberately not violet or pink, which reads as product branding rather
+     than as a signal. */
+  --k-static: #2563eb;
+  --k-runtime: #0d9488;
+  --k-model: #b45309;
+
+  /* -- Type ---------------------------------------------------------------
+     Two stacks and one scale. See DESIGN.md for why nothing is bundled: in
+     short, the native faces on the platforms this runs on are excellent and
+     carry no cost, and the character is meant to come from the system rather
+     than from a purchased voice. Change these two lines to swap in a webfont;
+     nothing else needs to know. */
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI Variable Text",
+    "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Mono", SFMono-Regular, "SF Mono", Menlo,
+    Consolas, monospace;
+
+  --t-micro: 10px;
+  --t-tiny: 11px;
+  --t-small: 12px;
+  --t-body: 13px;
+  --t-mid: 15px;
+  --t-lg: 18px;
+  --t-xl: 22px;
+  --t-display: 30px;
+
+  --track-caps: 0.08em;
+  --track-tight: -0.02em;
+
+  /* -- Space: a 4px grid --------------------------------------------------- */
+  --s-1: 2px;
+  --s-2: 4px;
+  --s-3: 6px;
+  --s-4: 8px;
+  --s-5: 12px;
+  --s-6: 16px;
+  --s-7: 20px;
+  --s-8: 24px;
+  --s-9: 32px;
+  --s-10: 48px;
+
+  /* -- Radius: small on purpose. Large radii read as consumer software. ---- */
+  --r-1: 3px;
+  --r-2: 5px;
+  --r-full: 999px;
+
+  /* -- Elevation: at the strength of a printed rule, not a floating card --- */
+  --e-1: 0 1px 1px rgb(16 22 33 / 4%);
+  --e-2: 0 1px 3px rgb(16 22 33 / 7%), 0 1px 1px rgb(16 22 33 / 4%);
+  --e-3: 0 6px 20px rgb(16 22 33 / 10%), 0 1px 2px rgb(16 22 33 / 6%);
+
+  /* -- Motion -------------------------------------------------------------
+     Four durations, two curves, nothing else. `--ease-out` covers most of its
+     distance immediately and then eases to a stop, which is what a needle
+     does. Neither curve overshoots: instruments settle, they do not spring. */
+  --dur-1: 120ms;
+  --dur-2: 220ms;
+  --dur-3: 380ms;
+  --dur-4: 900ms;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-io: cubic-bezier(0.65, 0, 0.35, 1);
+
+  /* The faint horizontal ruling behind both surfaces. Chart paper, and the
+     only ornament the system allows itself -- it earns its place by giving the
+     eye a horizontal rhythm to track values along. */
+  --rule-ink: color-mix(in srgb, var(--fg) 3%, transparent);
+  --rule-step: 28px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0b0d11;
+    --panel: #11151c;
+    --raised: #161b23;
+    --sunken: #0c0f14;
+
+    --fg: #e6e9ee;
+    --muted: #99a3b1;
+    --faint: #6c7581;
+
+    --line: #232936;
+    --line-strong: #333b4a;
+
+    --accent: #58a6ff;
+
+    --good: #3fb950;
+    --warn: #d29922;
+    --bad: #f85149;
+    --crit: #ff7b72;
+
+    --k-static: #5b9dff;
+    --k-runtime: #2dd4bf;
+    --k-model: #e0a530;
+
+    /* Shadows do almost nothing on a dark ground; the separation there comes
+       from the surface steps and the lines instead. Kept non-zero so panels
+       still sit rather than float. */
+    --e-1: 0 1px 1px rgb(0 0 0 / 24%);
+    --e-2: 0 1px 3px rgb(0 0 0 / 34%);
+    --e-3: 0 6px 20px rgb(0 0 0 / 44%);
+
+    --rule-ink: color-mix(in srgb, var(--fg) 3.5%, transparent);
+  }
+}
+
+/* ---------------------------------------------------------------------- */
+/* Base                                                                    */
+/* ---------------------------------------------------------------------- */
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  /* Tabular figures everywhere by default. Every number on both surfaces is a
+     measurement sitting in a column of other measurements, and proportional
+     digits make those columns jitter as values update. */
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* The chart-paper ruling, as a background any surface can opt into. */
+.ruled {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    var(--rule-ink) 0,
+    var(--rule-ink) 1px,
+    transparent 1px,
+    transparent var(--rule-step)
+  );
+}
+
+.muted { color: var(--muted); }
+.faint { color: var(--faint); }
+.error { color: var(--bad); }
+
+.mono {
+  font-family: var(--font-mono);
+  font-size: var(--t-small);
+}
+
+/* A legend on a panel, not a heading in a document. */
+.legend {
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  font-weight: 600;
+  letter-spacing: var(--track-caps);
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Motion primitives                                                       */
+/* ---------------------------------------------------------------------- */
+
+@keyframes rise-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes ping {
+  0% { transform: scale(0.5); opacity: 0.75; }
+  100% { transform: scale(2.4); opacity: 0; }
+}
+
+@keyframes shimmer {
+  from { background-position: -180% 0; }
+  to { background-position: 180% 0; }
+}
+
+/* A slow ping. The one continuous animation in the system, and it is here
+   because "is this actually running?" is a real question about a background
+   extension, and a heartbeat is the honest answer to it. */
+.pulse {
+  position: relative;
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: var(--r-full);
+  background: var(--good);
+  flex-shrink: 0;
+}
+
+.pulse::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border: 1px solid var(--good);
+  border-radius: var(--r-full);
+  animation: ping 2.4s var(--ease-out) infinite;
+}
+
+/* Loading placeholder. Shaped like the content it stands in for, so the
+   layout does not jump when the real thing arrives. */
+.skeleton {
+  border-radius: var(--r-1);
+  background: linear-gradient(
+    90deg,
+    var(--sunken) 25%,
+    color-mix(in srgb, var(--fg) 7%, var(--sunken)) 37%,
+    var(--sunken) 50%
+  );
+  background-size: 280% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Shared components                                                       */
+/* ---------------------------------------------------------------------- */
+
+/* -- Detection-layer legend and badges ---------------------------------- */
+
+.layers {
+  display: flex;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+}
+
+.layer-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-1);
+  padding: var(--s-1) var(--s-3) var(--s-1) 5px;
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: var(--panel);
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-full);
+  flex-shrink: 0;
+}
+
+.kind-badge {
+  flex-shrink: 0;
+  border: 1px solid transparent;
+  border-radius: var(--r-1);
+  padding: 1px 5px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.caught-by {
+  display: flex;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+}
+
+.caught-by-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  border: 1px solid transparent;
+  border-radius: var(--r-1);
+  padding: var(--s-1) 7px var(--s-1) var(--s-3);
+  font-size: var(--t-tiny);
+  font-weight: 600;
+}
+
+/* One block per layer rather than three near-identical ones: the tint, the
+   border and the dot all derive from the same custom property, so a layer
+   colour is stated exactly once. */
+.k-static { --k: var(--k-static); }
+.k-runtime { --k: var(--k-runtime); }
+.k-model { --k: var(--k-model); }
+
+.layer-chip .dot,
+.caught-by-item .dot { background: var(--k); }
+
+.kind-badge,
+.caught-by-item {
+  color: var(--k);
+  background: color-mix(in srgb, var(--k) 12%, transparent);
+  border-color: color-mix(in srgb, var(--k) 32%, transparent);
+}
+
+/* -- Disclosure ---------------------------------------------------------- */
+
+/* Both surfaces hide the native marker and draw their own, so the triangle
+   sits on the text baseline and picks up the muted colour. */
+.tech > summary,
+.wat > summary {
+  cursor: pointer;
+  list-style: none;
+  color: var(--muted);
+  transition: color var(--dur-1) var(--ease-io);
+}
+
+.tech > summary::-webkit-details-marker,
+.wat > summary::-webkit-details-marker { display: none; }
+
+.tech > summary::before,
+.wat > summary::before { content: "\25b8  "; }
+
+.tech[open] > summary::before,
+.wat[open] > summary::before { content: "\25be  "; }
+
+.tech > summary:hover,
+.wat > summary:hover { color: var(--fg); }
+
+.tech > summary {
+  font-size: var(--t-micro);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-family: var(--font-mono);
+}
+
+.tech-title { margin: var(--s-2) 0 0; font-size: var(--t-tiny); font-weight: 600; overflow-wrap: break-word; }
+.evidence { margin: var(--s-1) 0 0; font-size: var(--t-tiny); color: var(--muted); overflow-wrap: break-word; }
+.reference { margin: var(--s-1) 0 0; font-size: var(--t-micro); color: var(--faint); font-style: italic; overflow-wrap: break-word; }
+
+.wat pre {
+  margin: var(--s-3) 0 0;
+  overflow: auto;
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--r-2);
+  padding: var(--s-4);
+  font-family: var(--font-mono);
+  font-size: var(--t-tiny);
+  line-height: 1.5;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+
+.wat pre::-webkit-scrollbar { width: 8px; height: 8px; }
+.wat pre::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: var(--r-full); }
+.wat pre::-webkit-scrollbar-track { background: transparent; }
+
+/* -- Controls ------------------------------------------------------------ */
+
+button {
+  font: inherit;
+  padding: var(--s-2) var(--s-5);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-2);
+  background: var(--raised);
+  color: var(--fg);
+  cursor: pointer;
+  transition:
+    border-color var(--dur-1) var(--ease-io),
+    background var(--dur-1) var(--ease-io),
+    color var(--dur-1) var(--ease-io);
+}
+
+button:hover { border-color: var(--accent); color: var(--accent); }
+button:active { background: var(--sunken); }
+
+button.primary {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  background: color-mix(in srgb, var(--accent) 10%, var(--raised));
+  color: var(--accent);
+  font-weight: 600;
+}
+
+button.primary:hover { background: color-mix(in srgb, var(--accent) 18%, var(--raised)); }
+
+button.danger { border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); color: var(--bad); }
+button.danger:hover { border-color: var(--bad); color: var(--bad); background: color-mix(in srgb, var(--bad) 8%, var(--raised)); }
+
+/* One focus treatment for everything focusable, stated once. Never removed
+   without a replacement -- `:focus { outline: none }` on its own is how a
+   keyboard user loses the ability to see where they are. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-1);
+}
+
+button:focus:not(:focus-visible) { outline: none; }
+
+/* -- Empty state --------------------------------------------------------- */
+
+.empty {
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-2);
+  padding: var(--s-7) var(--s-5);
+  text-align: center;
+  color: var(--muted);
+  font-size: var(--t-small);
+}
+
+ul { list-style: none; margin: 0; padding: 0; }
+
+/* ---------------------------------------------------------------------- */
+/* Reduced motion                                                          */
+/* ---------------------------------------------------------------------- */
+
+/**
+ * Last in the file, and emphatic, for two reasons.
+ *
+ * Last, because CSS resolves equal specificity by source order: sitting above
+ * the `.pulse::after` rule it is meant to override, this block lost, and the
+ * heartbeat carried on pinging for every reader who had asked it not to.
+ *
+ * `!important`, because both surfaces import this file at the top of their own
+ * stylesheet, so every entrance animation they declare comes later than this
+ * does and would otherwise win the same way.
+ *
+ * What is *not* here is as deliberate. The usual shortcut -- a blanket
+ * `* { animation-duration: 0.01ms }` -- is wrong for this interface, because
+ * several of the animations carry the value itself: the ring fills to the
+ * score, the figures count up to it, the trace draws the last five minutes.
+ * Freezing those leaves a reader who asked for less motion looking at a
+ * permanent zero, which is strictly less information than everyone else gets.
+ * They are handled in JavaScript instead -- `prefersReducedMotion()` -- by
+ * rendering the true value on the first paint. This block only removes what is
+ * genuinely decorative.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .scorecard,
+  .gauge,
+  .artifact,
+  .finding,
+  .card,
+  .module,
+  .hero-figure {
+    animation: none !important;
+  }
+
+  .pulse::after,
+  .skeleton {
+    animation: none !important;
+  }
+
+  /* The value still arrives, it just arrives immediately: the components set
+     their final state on the first render, and this stops the transition that
+     would otherwise walk them there. */
+  .gauge-arc,
+  .spark-line,
+  .risk-bar-seg {
+    transition: none !important;
+  }
+}

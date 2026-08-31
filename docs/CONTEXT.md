@@ -97,6 +97,24 @@ per two cores running a fixture that really spins, and after twenty seconds
 `mining-runtime-corroborated`, with the popup showing the seconds executed and
 the core-equivalents behind it.
 
+### Looking at the interface without installing anything
+
+```bash
+npm run build -w extension
+npm run preview:ui                      # http://localhost:8090/?scene=miner
+```
+
+Serves `extension/dist` and injects a stubbed `chrome` API in front of it, so
+the real built popup and dashboard render against fixed data in an ordinary
+tab. Scenes: `miner`, `clean`, `empty`, `loading` -- the last one answers no
+messages at all, which is how the skeleton states get looked at.
+
+This exists because gotcha 13 makes the packed extension impossible to load
+headlessly, and because the alternative loop for a one-line style change was
+build, reload the unpacked extension, find a page that runs WebAssembly, open
+the popup. It renders the interface and nothing else: it proves nothing about
+capture, which is what `standalone.html` below is for.
+
 ### Checking capture in a real browser, without installing anything
 
 ```bash
@@ -198,6 +216,13 @@ extension/
     popup/                    per-page Privacy Scorecard
     popup/load-report.ts      message fetching with every failure mode named
     dashboard/                cross-tab activity, status, modules, settings
+    ui/theme.css              every colour, size, curve and duration, declared once
+    ui/layers.tsx             the three detection layers, rendered the same everywhere
+    ui/motion.ts              count-up, easing, and the reduced-motion decision
+    ui/sparkline.ts           bucketing and path construction for the activity chart
+    ui/gauge.ts               score-ring geometry
+    ui/measure.ts             observed element width; why the chart is not stretched
+    ui/scroll-spy.ts          which dashboard section is being read
     shared/protocol.ts        message types + caps
     utils/db.ts               IndexedDB (schema v5)
     utils/settings.ts         local-first defaults
@@ -206,13 +231,17 @@ extension/
   test/pipeline.test.ts       end-to-end through the real service worker
   test/worker-prelude.test.ts builds the prelude and runs it in a fake worker scope
   test/runtime-monitor.test.ts  what the page sees, and what measuring costs
+  test/ui.test.ts             the arithmetic behind the animated parts
 
 backend/                 SQLite + job queue + upload API, ESM + tsx
   src/app.ts               routes, built as a factory so tests drive the real ones
   src/db/                  node:sqlite store and schema
   src/queue.ts             one job at a time, resumable across restarts
 testbed/                 local page exercising every capture path
-docs/                    architecture, detection, api-spec, this file
+scripts/preview-ui.mjs   serves the built popup and dashboard with a stubbed
+                         chrome API, so the interface can be looked at without
+                         installing anything
+docs/                    architecture, detection, design, api-spec, this file
 ```
 
 ---
@@ -233,6 +262,10 @@ docs/                    architecture, detection, api-spec, this file
 - New Wasm fixtures must pass `WebAssembly.validate` inside the test, so a broken
   encoder fails at the fixture rather than proving the parser agrees with our own
   mistake.
+- **No colour, size, radius, duration or easing curve is written in a component
+  stylesheet.** They live in `extension/src/ui/theme.css` and are used through
+  custom properties. Before this rule the popup and the dashboard kept separate
+  copies of the palette and had already drifted; see [`DESIGN.md`](DESIGN.md).
 - Generated artifacts are gitignored: `dist/`, `testbed/*.wasm`.
 
 ---
@@ -342,5 +375,7 @@ and whatever the next person finds.
 - [`detection.md`](detection.md) — rules, scoring maths, the calibration corpus,
   and the false positive that reshaped the design.
 - [`architecture.md`](architecture.md) — the seven stages and which are done.
+- [`DESIGN.md`](DESIGN.md) — the visual system: the direction, the tokens, what
+  is deliberately banned from it, and the motion brief.
 - [`api-spec.md`](api-spec.md) — extension message protocol and backend HTTP API.
 - `git log` — every decision with the reasoning that produced it.
