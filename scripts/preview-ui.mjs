@@ -3,11 +3,11 @@
  *
  * These two surfaces are the hardest part of the project to look at. They only
  * render inside an installed extension, they talk to a service worker Chrome
- * keeps killing, and -- see gotcha 13 in `docs/CONTEXT.md` -- Chrome will not
- * load the packed extension headlessly at all. So the loop for "I changed a
- * colour, does it look right?" was: build, open `chrome://extensions`, reload
- * the unpacked extension, find a page that runs WebAssembly, open the popup.
- * Every time.
+ * keeps killing, and Chrome will not load a packed extension headlessly at all
+ * -- `--load-extension` is ignored under `--headless=new`, silently, so the
+ * content scripts simply never run. So the loop for "I changed a colour, does
+ * it look right?" was: build, open `chrome://extensions`, reload the unpacked
+ * extension, find a page that runs WebAssembly, open the popup. Every time.
  *
  * This serves `extension/dist` over HTTP and injects a small `chrome` stub in
  * front of each page, so the *real built bundles* -- the real components, the

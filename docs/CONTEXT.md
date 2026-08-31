@@ -109,11 +109,12 @@ the real built popup and dashboard render against fixed data in an ordinary
 tab. Scenes: `miner`, `clean`, `empty`, `loading` -- the last one answers no
 messages at all, which is how the skeleton states get looked at.
 
-This exists because gotcha 13 makes the packed extension impossible to load
-headlessly, and because the alternative loop for a one-line style change was
-build, reload the unpacked extension, find a page that runs WebAssembly, open
-the popup. It renders the interface and nothing else: it proves nothing about
-capture, which is what `standalone.html` below is for.
+This exists because a packed extension cannot be loaded in headless Chrome at
+all — `--load-extension` is ignored under `--headless=new`, with no error — and
+because the alternative loop for a one-line style change was build, reload the
+unpacked extension, find a page that runs WebAssembly, open the popup. It
+renders the interface and nothing else: it proves nothing about capture, which
+is what `standalone.html` below is for.
 
 ### Checking capture in a real browser, without installing anything
 
